@@ -28,3 +28,6 @@ You might have to delete a whole bunch of output files.
 3. Memory is not measured within `bench_solvers.py` but in `benchmark.py`. This is because the we must also measure the memory allocated when `H_0` and `H_1` are created. 
 
 4. For all the JAX-based solvers (regardless of JIT), the solver is "warmed-up" with a single run. This triggers any compilation defined in my code, as well as any hidden compilation, defined by `dynamiqs`. I'm not sure if this is the best decision, but you should keep this in mind while interpreting the results.
+
+## Caution:
+`.submit.sh` is written by Claude! So please don't blame Harsh if your computer blows up. 
