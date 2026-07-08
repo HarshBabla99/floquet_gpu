@@ -1,104 +1,56 @@
 import gc
 import jax
+import jax.numpy as jnp
 from time import perf_counter
-import numpy as np
 from jax import block_until_ready
-from solvers import *
+from solvers import batched_step_propagators, propagator_expm_scan, propagator_expm_assoc
 
 
-def bench_basic(H0, H1, A, omega_d, jit=False, **_):
-    H = qt.QobjEvo([H0.to_qutip(), [H1.to_qutip(), lambda t: A * np.cos(omega_d * t)]])
+def _bench_expm(compose_fn, H0, H1, A, omega_d, expm_steps, jit):
+    """Times the two phases shared by both composition strategies:
+    - t_batch:   build the N piecewise-constant generators and batch-exponentiate them
+    - t_compose: combine the N step propagators into the full-period propagator
+    `compose_fn` is the only thing that differs between solvers (scan vs associative_scan).
+    """
+    batch_fn = (jax.jit(batched_step_propagators, static_argnames='N')
+                if jit else batched_step_propagators)
+    compose = jax.jit(compose_fn) if jit else compose_fn
 
-    t0 = perf_counter()
-    out = floquet_basic(H, omega_d)
-    t_solver = perf_counter() - t0
-
-    q, m = post_process_qutip(*out, omega_d)
-    return dict(t_solver=t_solver, t_total=t_solver, q=np.array(q), m=np.array(m))
-
-
-def bench_dq_basic(H0, H1, A, omega_d, jit=False, **_):
-    solver_fn = jax.jit(floquet_dq_basic) if jit else floquet_dq_basic
-
-    # warmup: warms up dynamiqs ODE JIT; also triggers our JIT compilation when jit=True
-    U = propagator(H0, H1, A, omega_d)
-    block_until_ready(solver_fn(U))
-    del U; gc.collect()
+    # warmup: triggers JIT compilation when jit=True
+    sp = batch_fn(H0, H1, A, omega_d, expm_steps)
+    block_until_ready(compose(sp))
+    del sp; gc.collect()
 
     t0 = perf_counter()
-    U = propagator(H0, H1, A, omega_d)
-    block_until_ready(U)
-    t_prop = perf_counter() - t0
+    sp = batch_fn(H0, H1, A, omega_d, expm_steps)
+    block_until_ready(sp)
+    t_batch = perf_counter() - t0
 
     t1 = perf_counter()
-    out = solver_fn(U)
-    block_until_ready(out)
-    t_solver = perf_counter() - t1
-
-    q, m = post_process(*out, omega_d)
-    return dict(t_prop=t_prop, t_solver=t_solver, t_total=t_prop + t_solver,
-                q=np.array(q), m=np.array(m))
-
-
-def bench_cayley(H0, H1, A, omega_d, cayley_phi=0, jit=False, **_):
-    solver_fn = jax.jit(floquet_cayley) if jit else floquet_cayley
-
-    U = propagator(H0, H1, A, omega_d)
-    block_until_ready(solver_fn(U, cayley_phi))
-    del U; gc.collect()
-
-    t0 = perf_counter()
-    U = propagator(H0, H1, A, omega_d)
+    U = compose(sp)
     block_until_ready(U)
-    t_prop = perf_counter() - t0
+    t_compose = perf_counter() - t1
 
-    t1 = perf_counter()
-    out = solver_fn(U, cayley_phi)
-    block_until_ready(out)
-    t_solver = perf_counter() - t1
-
-    q, m = post_process(*out, omega_d)
-    return dict(t_prop=t_prop, t_solver=t_solver, t_total=t_prop + t_solver,
-                q=np.array(q), m=np.array(m))
+    return dict(t_batch=t_batch, t_compose=t_compose, t_total=t_batch + t_compose, U=U, sp=sp)
 
 
-def bench_sambe_sparse(H0, H1, A, omega_d, sambe_copies=12, jit=False, **_):
-    solver_fn = (jax.jit(floquet_sambe, static_argnames=('N', 'dense'))
-                 if jit else floquet_sambe)
-
-    block_until_ready(solver_fn(H0, H1, A, omega_d, N=sambe_copies, dense=False))
-    gc.collect()
-
-    t0 = perf_counter()
-    out = solver_fn(H0, H1, A, omega_d, N=sambe_copies, dense=False)
-    block_until_ready(out)
-    t_total = perf_counter() - t0
-
-    q, m = post_process(*out, omega_d)
-    return dict(t_total=t_total, q=np.array(q), m=np.array(m))
+def bench_expm_scan(H0, H1, A, omega_d, expm_steps=32, jit=False, **_):
+    m = _bench_expm(propagator_expm_scan, H0, H1, A, omega_d, expm_steps, jit)
+    return dict(t_batch=m['t_batch'], t_compose=m['t_compose'], t_total=m['t_total'])
 
 
-def bench_sambe_dense(H0, H1, A, omega_d, sambe_copies=12, jit=False, **_):
-    solver_fn = (jax.jit(floquet_sambe, static_argnames=('N', 'dense'))
-                 if jit else floquet_sambe)
+def bench_expm_assoc(H0, H1, A, omega_d, expm_steps=32, jit=False, **_):
+    m = _bench_expm(propagator_expm_assoc, H0, H1, A, omega_d, expm_steps, jit)
 
-    block_until_ready(solver_fn(H0, H1, A, omega_d, N=sambe_copies, dense=True))
-    gc.collect()
+    # untimed correctness check against the scan-based (current dynamiqs) composition
+    U_ref = propagator_expm_scan(m['sp'])
+    perr = float(jnp.max(jnp.abs(m['U'] - U_ref)))
 
-    t0 = perf_counter()
-    out = solver_fn(H0, H1, A, omega_d, N=sambe_copies, dense=True)
-    block_until_ready(out)
-    t_total = perf_counter() - t0
-
-    q, m = post_process(*out, omega_d)
-    return dict(t_total=t_total, q=np.array(q), m=np.array(m))
+    return dict(t_batch=m['t_batch'], t_compose=m['t_compose'], t_total=m['t_total'], perr=perr)
 
 
 ####################################################################################################
 BENCH_FNS = {
-    'basic':        bench_basic,
-    'dq_basic':     bench_dq_basic,
-    'cayley':       bench_cayley,
-    'sambe_sparse': bench_sambe_sparse,
-    'sambe_dense':  bench_sambe_dense,
+    'expm_scan':  bench_expm_scan,
+    'expm_assoc': bench_expm_assoc,
 }

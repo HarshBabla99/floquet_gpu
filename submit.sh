@@ -9,13 +9,12 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 NUM_JOBS_PER_SOLVER=5
 DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096)
-NON_BASIC_SOLVERS=('dq_basic' 'cayley' 'sambe_sparse' 'sambe_dense'
-                   'dq_basic_jit' 'cayley_jit' 'sambe_sparse_jit' 'sambe_dense_jit')
+SOLVERS=('expm_scan' 'expm_assoc' 'expm_scan_jit' 'expm_assoc_jit')
+EXPM_STEPS=32
 
-BASIC_PARTITION='day'
-BASIC_DIR='out/cpu'
+CONSOLIDATE_PARTITION='day'
 
-# Non-basic devices: name  partition  gpu_flag ('' for CPU)
+# devices: name  partition  gpu_flag ('' for CPU)
 DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
@@ -27,7 +26,7 @@ WORK_DIR="$(pwd)"
 
 # Derived; exported so batch scripts receive them via SLURM's --export=ALL default
 NUM_DIMS=${#DIMS[@]}
-export NUM_JOBS_PER_SOLVER NUM_DIMS BASIC_DIR WORK_DIR
+export NUM_JOBS_PER_SOLVER NUM_DIMS EXPM_STEPS WORK_DIR
 export DIMS_STR="${DIMS[*]}"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -69,7 +68,7 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: ${SOLVER} d=${DIM} r=${RUN_IDX} on ${DEVICE}"
 cd "${WORK_DIR}" && module load uv
 JAX_PLATFORMS=${JAX_PLAT} uv run python benchmark.py \
     --solver "${SOLVER}" --dim "${DIM}" --run-index "${RUN_IDX}" \
-    --device "${DEVICE}" --basic-dir "${BASIC_DIR}"
+    --device "${DEVICE}" --expm-steps "${EXPM_STEPS}"
 BATCH
 }
 
@@ -85,7 +84,7 @@ submit_consolidate() {
 
     sbatch \
         --parsable \
-        --partition="${BASIC_PARTITION}" \
+        --partition="${CONSOLIDATE_PARTITION}" \
         --job-name="consolidate_${name}" \
         --ntasks=1 --mem=5G --time=00:05:00 \
         --mail-type=BEGIN,END,FAIL \
@@ -101,20 +100,7 @@ uv run python consolidate.py \
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Phase 1: basic (qutip, always CPU)
-# ──────────────────────────────────────────────────────────────────────────────
-mkdir -p "${BASIC_DIR}"
-echo "=== Phase 1: basic ==="
-BASIC_JOB=$(submit_solver 'basic' 'cpu' "${BASIC_PARTITION}" '' '')
-echo "  Job array: ${BASIC_JOB}"
-
-# Consolidate after the basic job finishes
-CONSOLIDATE_JOB=$(submit_consolidate 'basic' "${WORK_DIR}/${BASIC_DIR}" \
-    "${WORK_DIR}/out/basic.npy" 'basic' "${BASIC_JOB}")
-echo "  Consolidate → ${CONSOLIDATE_JOB}"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Phase 2: non-basic solvers, one device at a time.
+# expm_scan vs expm_assoc, one device at a time.
 # Within a device all solver arrays run in parallel; consolidation waits for all.
 # ──────────────────────────────────────────────────────────────────────────────
 for i in "${!DEVICE_NAMES[@]}"; do
@@ -123,12 +109,12 @@ for i in "${!DEVICE_NAMES[@]}"; do
     GPU_FLAG="${DEVICE_GPU_FLAGS[$i]}"
 
     echo ""
-    echo "=== Phase 2.${i}: non-basic on ${DEVICE} (partition=${PARTITION}) ==="
+    echo "=== ${DEVICE} (partition=${PARTITION}) ==="
     mkdir -p "out/${DEVICE}"
 
     SOLVER_JOB_IDS=()
-    for solver in "${NON_BASIC_SOLVERS[@]}"; do
-        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" "${BASIC_JOB}")
+    for solver in "${SOLVERS[@]}"; do
+        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" '')
         SOLVER_JOB_IDS+=("${jid}")
         echo "  ${solver} → ${jid}"
     done
@@ -137,6 +123,6 @@ for i in "${!DEVICE_NAMES[@]}"; do
 
     # Consolidate after all solver arrays finish (afterany = regardless of exit status)
     CONSOLIDATE_JOB=$(submit_consolidate "${DEVICE}" "${WORK_DIR}/out/${DEVICE}" \
-        "${WORK_DIR}/out/${DEVICE}.npy" "${NON_BASIC_SOLVERS[*]}" "${SOLVER_DEP}")
+        "${WORK_DIR}/out/${DEVICE}.npy" "${SOLVERS[*]}" "${SOLVER_DEP}")
     echo "  Consolidate → ${CONSOLIDATE_JOB}"
 done

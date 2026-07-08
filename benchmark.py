@@ -11,7 +11,7 @@ import dynamiqs as dq
 
 from bench_solvers import BENCH_FNS
 
-ALL_SOLVERS = list(BENCH_FNS) + [k + '_jit' for k in BENCH_FNS if k != 'basic']
+ALL_SOLVERS = list(BENCH_FNS) + [k + '_jit' for k in BENCH_FNS]
 
 def _peak_rss_mb():
     """Peak memory of this process (on host), in MB."""
@@ -45,8 +45,7 @@ def load_rows(path):
                 break
     return rows
 
-def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, output_path,
-        basic_dir=None):
+def run(solver, d, run_index, device, A, omega_d, expm_steps, output_path):
     is_jit = solver.endswith('_jit')
     base_solver = solver.removesuffix('_jit') if is_jit else solver
     bench_fn = BENCH_FNS[base_solver]
@@ -60,27 +59,8 @@ def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, outp
     H0 = random_hermitian((d, d), k0)
     H1 = random_hermitian((d, d), k1)
 
-    if base_solver != 'basic':
-        _basic_dir = basic_dir if basic_dir is not None else os.path.dirname(output_path)
-        basic_path = os.path.join(_basic_dir, f'basic_d{d}_run{run_index}.npy')
-        basic_ref = load_rows(basic_path)[0]
-    metrics = bench_fn(H0, H1, A, omega_d,
-                       cayley_phi=cayley_phi, sambe_copies=sambe_copies, jit=is_jit)
-
-    if base_solver == 'basic':
-        row = dict(solver=solver, device=device, run_index=run_index, d=d, **metrics)
-    else:
-        innerp = np.sum(basic_ref['m'].conj() * metrics['m'], axis=1)
-
-        row = dict(
-            solver=solver, device=device, run_index=run_index, d=d,
-            t_total=metrics['t_total'],
-            qerr=float(np.max(np.abs(basic_ref['q'] - metrics['q']))),
-            merr=float(np.max(1.0 - np.abs(innerp)**2)),
-        )
-        if 't_prop' in metrics:
-            row['t_prop'] = metrics['t_prop']
-            row['t_solver'] = metrics['t_solver']
+    metrics = bench_fn(H0, H1, A, omega_d, expm_steps=expm_steps, jit=is_jit)
+    row = dict(solver=solver, device=device, run_index=run_index, d=d, **metrics)
 
     mem_final = _peak_rss_mb()
     row['mem_total'] = mem_final - mem_start
@@ -96,7 +76,7 @@ def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, outp
 
     final_str = f'Finished [{device}/{solver} run={run_index} d={d}] \t peak RSS={mem_final:.1f} MB \t'
     final_str += f't_total={metrics["t_total"]:.3f}s'
-    final_str += f'\tqerr={row["qerr"]:.3e} \t merr={row["merr"]:.3e}' if 'qerr' in row else ''
+    final_str += f'\tperr={row["perr"]:.3e}' if 'perr' in row else ''
     print(final_str, flush=True)
 
 if __name__ == '__main__':
@@ -106,15 +86,14 @@ if __name__ == '__main__':
     parser.add_argument('--run-index', type=int, required=True)
     parser.add_argument('--device',    default='cpu',
                         help='Device identifier passed to dq.set_device; also used as output subdirectory')
-    parser.add_argument('--basic-dir', default=None,
-                        help='Directory containing basic reference .npy files; '
-                             'defaults to the same directory as the output file')
+    parser.add_argument('--expm-steps', type=int, default=32,
+                        help='Number N of piecewise-constant sub-intervals used to '
+                             'discretize one drive period before batched matrix '
+                             'exponentiation (shared by both composition strategies).')
     args = parser.parse_args()
 
     A = 1.0
     omega_d = 2.0
-    cayley_phi = 0.
-    sambe_copies = 12
 
     out_dir = os.path.join('out', args.device)
     os.makedirs(out_dir, exist_ok=True)
@@ -123,13 +102,11 @@ if __name__ == '__main__':
     jax_device = 'gpu' if args.device.startswith('gpu') else 'cpu'
     print(f'Setting device to: {jax_device}', flush=True)
     dq.set_device(jax_device)
-    
+
     run(solver=args.solver,
         d=args.dim,
         run_index=args.run_index,
         device=args.device,
         A=A, omega_d=omega_d,
-        cayley_phi=cayley_phi,
-        sambe_copies=sambe_copies,
-        output_path=output_path,
-        basic_dir=args.basic_dir)
+        expm_steps=args.expm_steps,
+        output_path=output_path)
