@@ -45,7 +45,7 @@ def load_rows(path):
                 break
     return rows
 
-def run(solver, d, run_index, device, A, omega_d, expm_steps, output_path):
+def run(solver, d, run_index, device, A, omega_d, expm_steps, output_path, ref_dir=None):
     is_jit = solver.endswith('_jit')
     base_solver = solver.removesuffix('_jit') if is_jit else solver
     bench_fn = BENCH_FNS[base_solver]
@@ -59,7 +59,13 @@ def run(solver, d, run_index, device, A, omega_d, expm_steps, output_path):
     H0 = random_hermitian((d, d), k0)
     H1 = random_hermitian((d, d), k1)
 
-    metrics = bench_fn(H0, H1, A, omega_d, expm_steps=expm_steps, jit=is_jit)
+    ref_U = None
+    if base_solver != 'dq_basic':
+        _ref_dir = ref_dir if ref_dir is not None else os.path.join('out', 'cpu')
+        ref_path = os.path.join(_ref_dir, f'dq_basic_d{d}_run{run_index}.npy')
+        ref_U = load_rows(ref_path)[0]['U']
+
+    metrics = bench_fn(H0, H1, A, omega_d, expm_steps=expm_steps, jit=is_jit, ref_U=ref_U)
     row = dict(solver=solver, device=device, run_index=run_index, d=d, **metrics)
 
     mem_final = _peak_rss_mb()
@@ -90,6 +96,9 @@ if __name__ == '__main__':
                         help='Number N of piecewise-constant sub-intervals used to '
                              'discretize one drive period before batched matrix '
                              'exponentiation (shared by both composition strategies).')
+    parser.add_argument('--ref-dir', default=None,
+                        help='Directory containing dq_basic (ground-truth) reference '
+                             '.npy files; defaults to out/cpu. Unused when --solver is dq_basic.')
     args = parser.parse_args()
 
     A = 1.0
@@ -109,4 +118,5 @@ if __name__ == '__main__':
         device=args.device,
         A=A, omega_d=omega_d,
         expm_steps=args.expm_steps,
-        output_path=output_path)
+        output_path=output_path,
+        ref_dir=args.ref_dir)

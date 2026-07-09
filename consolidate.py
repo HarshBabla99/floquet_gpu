@@ -6,10 +6,16 @@ from benchmark import load_rows, ALL_SOLVERS
 
 
 def load_solver_runs(solver, out_dir='out'):
-    """Return {d: [row, row, ...]} aggregated across all run files for a solver."""
+    """Return {d: [row, row, ...]} aggregated across all run files for a solver.
+
+    Large array-valued fields (e.g. the raw propagator `U` kept around for
+    other solvers to use as a reference) are dropped here -- they belong in
+    the per-run raw files, not in the aggregated summary.
+    """
     by_dim = {}
     for path in sorted(glob.glob(f'{out_dir}/{solver}_d*_run*.npy')):
         for row in load_rows(path):
+            row = {k: v for k, v in row.items() if not hasattr(v, 'shape')}
             by_dim.setdefault(row['d'], []).append(row)
     return by_dim
 

@@ -44,3 +44,16 @@ def propagator_expm_assoc(step_propagators):
     """
     combine = lambda a, b: b @ a  # a earlier, b later: compose as b . a
     return jax.lax.associative_scan(combine, step_propagators)[-1]
+
+
+##
+# Ground truth: adaptive ODE integration of the actual (smooth) drive,
+# rather than a piecewise-constant approximation of it.
+##
+def propagator_tsit5(H0, H1, A, omega_d, rtol=1e-8, atol=1e-8):
+    method = dq.method.Tsit5(rtol=rtol, atol=atol)
+    options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
+    H = dq.constant(H0) + dq.modulated(lambda t: A * jnp.cos(omega_d * t), H1)
+    T = 2.0 * jnp.pi / omega_d
+    result = dq.sepropagator(H, jnp.array([T]), method=method, options=options)
+    return result.final_propagator.to_jax()

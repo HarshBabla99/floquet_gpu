@@ -12,21 +12,27 @@ DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096)
 SOLVERS=('expm_scan' 'expm_assoc' 'expm_scan_jit' 'expm_assoc_jit')
 EXPM_STEPS=32
 
+REF_PARTITION='day'
+REF_DIR='out/cpu'
+
 CONSOLIDATE_PARTITION='day'
 
 # devices: name  partition  gpu_flag ('' for CPU)
-DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
-DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
-DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
+# DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
+# DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
+# DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
+DEVICE_NAMES=(     'cpu'   'gpu_b200'     )
+DEVICE_PARTITIONS=('day'   'gpu_b200'     )
+DEVICE_GPU_FLAGS=( ''      '--gpus=b200:1')
 
-BENCH_TIME='00:30:00'
+BENCH_TIME='00:10:00'
 BENCH_MEM_PER_CPU='10G'
 MAIL_USER='harsh.babla@yale.edu'
 WORK_DIR="$(pwd)"
 
 # Derived; exported so batch scripts receive them via SLURM's --export=ALL default
 NUM_DIMS=${#DIMS[@]}
-export NUM_JOBS_PER_SOLVER NUM_DIMS EXPM_STEPS WORK_DIR
+export NUM_JOBS_PER_SOLVER NUM_DIMS EXPM_STEPS REF_DIR WORK_DIR
 export DIMS_STR="${DIMS[*]}"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -68,7 +74,7 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: ${SOLVER} d=${DIM} r=${RUN_IDX} on ${DEVICE}"
 cd "${WORK_DIR}" && module load uv
 JAX_PLATFORMS=${JAX_PLAT} uv run python benchmark.py \
     --solver "${SOLVER}" --dim "${DIM}" --run-index "${RUN_IDX}" \
-    --device "${DEVICE}" --expm-steps "${EXPM_STEPS}"
+    --device "${DEVICE}" --expm-steps "${EXPM_STEPS}" --ref-dir "${REF_DIR}"
 BATCH
 }
 
@@ -100,7 +106,30 @@ uv run python consolidate.py \
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# expm_scan vs expm_assoc, one device at a time.
+# Phase 1: dq_basic (Tsit5, CPU-only) -- ground truth propagator that
+# expm_scan/expm_assoc compare against. Computed once per (d, run_index) here
+# rather than redone inside every other solver, since it's expensive at large d.
+# dq_basic_jit is only benchmarked for comparison; only dq_basic's raw output
+# is actually read as a reference by other solvers.
+# ──────────────────────────────────────────────────────────────────────────────
+REF_SOLVERS=('dq_basic' 'dq_basic_jit')
+
+mkdir -p "${REF_DIR}"
+echo "=== Phase 1: dq_basic (ground truth) ==="
+REF_JOB_IDS=()
+for solver in "${REF_SOLVERS[@]}"; do
+    jid=$(submit_solver "${solver}" 'cpu' "${REF_PARTITION}" '' '')
+    REF_JOB_IDS+=("${jid}")
+    echo "  ${solver} → ${jid}"
+done
+REF_JOB=$(IFS=':'; echo "${REF_JOB_IDS[*]}")
+
+CONSOLIDATE_JOB=$(submit_consolidate 'dq_basic' "${WORK_DIR}/${REF_DIR}" \
+    "${WORK_DIR}/out/dq_basic.npy" "${REF_SOLVERS[*]}" "${REF_JOB}")
+echo "  Consolidate → ${CONSOLIDATE_JOB}"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 2: expm_scan vs expm_assoc, one device at a time.
 # Within a device all solver arrays run in parallel; consolidation waits for all.
 # ──────────────────────────────────────────────────────────────────────────────
 for i in "${!DEVICE_NAMES[@]}"; do
@@ -109,12 +138,12 @@ for i in "${!DEVICE_NAMES[@]}"; do
     GPU_FLAG="${DEVICE_GPU_FLAGS[$i]}"
 
     echo ""
-    echo "=== ${DEVICE} (partition=${PARTITION}) ==="
+    echo "=== Phase 2: ${DEVICE} (partition=${PARTITION}) ==="
     mkdir -p "out/${DEVICE}"
 
     SOLVER_JOB_IDS=()
     for solver in "${SOLVERS[@]}"; do
-        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" '')
+        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" "${REF_JOB}")
         SOLVER_JOB_IDS+=("${jid}")
         echo "  ${solver} → ${jid}"
     done
