@@ -9,7 +9,7 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 NUM_JOBS_PER_SOLVER=5
 DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096)
-SOLVERS=('expm_scan' 'expm_assoc' 'expm_scan_jit' 'expm_assoc_jit')
+SOLVERS=('dq_basic' 'dq_basic_jit' 'expm_scan' 'expm_assoc' 'expm_scan_jit' 'expm_assoc_jit')
 EXPM_STEPS=32
 
 REF_PARTITION='day'
@@ -25,7 +25,7 @@ DEVICE_NAMES=(     'cpu'   'gpu_b200'     )
 DEVICE_PARTITIONS=('day'   'gpu_b200'     )
 DEVICE_GPU_FLAGS=( ''      '--gpus=b200:1')
 
-BENCH_TIME='00:10:00'
+BENCH_TIME='00:30:00'
 BENCH_MEM_PER_CPU='10G'
 MAIL_USER='harsh.babla@yale.edu'
 WORK_DIR="$(pwd)"
@@ -106,31 +106,16 @@ uv run python consolidate.py \
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Phase 1: dq_basic (Tsit5, CPU-only) -- ground truth propagator that
-# expm_scan/expm_assoc compare against. Computed once per (d, run_index) here
-# rather than redone inside every other solver, since it's expensive at large d.
-# dq_basic_jit is only benchmarked for comparison; only dq_basic's raw output
-# is actually read as a reference by other solvers.
+# Phase 1: dq_basic (Tsit5, CPU-only): reference propagator to compare against.
 # ──────────────────────────────────────────────────────────────────────────────
-REF_SOLVERS=('dq_basic' 'dq_basic_jit')
-
 mkdir -p "${REF_DIR}"
-echo "=== Phase 1: dq_basic (ground truth) ==="
-REF_JOB_IDS=()
-for solver in "${REF_SOLVERS[@]}"; do
-    jid=$(submit_solver "${solver}" 'cpu' "${REF_PARTITION}" '' '')
-    REF_JOB_IDS+=("${jid}")
-    echo "  ${solver} → ${jid}"
-done
-REF_JOB=$(IFS=':'; echo "${REF_JOB_IDS[*]}")
-
-CONSOLIDATE_JOB=$(submit_consolidate 'dq_basic' "${WORK_DIR}/${REF_DIR}" \
-    "${WORK_DIR}/out/dq_basic.npy" "${REF_SOLVERS[*]}" "${REF_JOB}")
-echo "  Consolidate → ${CONSOLIDATE_JOB}"
+echo "=== Phase 1: dq_basic on cpu (ground truth) ==="
+REF_JOB=$(submit_solver 'dq_basic' 'cpu' "${REF_PARTITION}" '' '')
+echo "  dq_basic → ${REF_JOB}"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Phase 2: expm_scan vs expm_assoc, one device at a time.
-# Within a device all solver arrays run in parallel; consolidation waits for all.
+# Phase 2: All solvers, one device at a time. All depend on the phase 1 job
+# Consolidation waits for all of them.
 # ──────────────────────────────────────────────────────────────────────────────
 for i in "${!DEVICE_NAMES[@]}"; do
     DEVICE="${DEVICE_NAMES[$i]}"
@@ -141,17 +126,31 @@ for i in "${!DEVICE_NAMES[@]}"; do
     echo "=== Phase 2: ${DEVICE} (partition=${PARTITION}) ==="
     mkdir -p "out/${DEVICE}"
 
-    SOLVER_JOB_IDS=()
+    # List of dependencies for the consolidation job. Include the phase 1 job.
+    JOB_IDS=()
+    [[ "${DEVICE}" == "cpu" ]] && JOB_IDS+=("${REF_JOB}")
+
+    # Iterate through solvers
     for solver in "${SOLVERS[@]}"; do
-        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" "${REF_JOB}")
-        SOLVER_JOB_IDS+=("${jid}")
+    
+        # Skip dq_basic on cpu
+        [[ "${DEVICE}" == "cpu" && "${solver}" == "dq_basic" ]] && continue
+
+        # dq_basic and dq_basic_jit don't depend on the ref job
+        if [[ "${solver}" == dq_basic* ]]; then
+            dep=''
+        else
+            dep="${REF_JOB}"
+        fi
+
+        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" "${dep}")
+        JOB_IDS+=("${jid}")
         echo "  ${solver} → ${jid}"
     done
 
-    SOLVER_DEP=$(IFS=':'; echo "${SOLVER_JOB_IDS[*]}")
-
-    # Consolidate after all solver arrays finish (afterany = regardless of exit status)
+    # Consolidate all jobs on this device. 
+    DEP=$(IFS=':'; echo "${JOB_IDS[*]}")
     CONSOLIDATE_JOB=$(submit_consolidate "${DEVICE}" "${WORK_DIR}/out/${DEVICE}" \
-        "${WORK_DIR}/out/${DEVICE}.npy" "${SOLVERS[*]}" "${SOLVER_DEP}")
+        "${WORK_DIR}/out/${DEVICE}.npy" "${SOLVERS[*]}" "${DEP}")
     echo "  Consolidate → ${CONSOLIDATE_JOB}"
 done
