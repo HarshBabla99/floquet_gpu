@@ -1,12 +1,11 @@
 import gc
-import jax
 from time import perf_counter
 import numpy as np
-from jax import block_until_ready
+from jax import jit, block_until_ready
 from solvers import *
 
 
-def bench_basic(H0, H1, A, omega_d, jit=False, **_):
+def bench_basic(H0, H1, A, omega_d, to_jit=False, **_):
     H = qt.QobjEvo([H0.to_qutip(), [H1.to_qutip(), lambda t: A * np.cos(omega_d * t)]])
 
     t0 = perf_counter()
@@ -17,16 +16,17 @@ def bench_basic(H0, H1, A, omega_d, jit=False, **_):
     return dict(t_solver=t_solver, t_total=t_solver, q=np.array(q), m=np.array(m))
 
 
-def bench_dq_basic(H0, H1, A, omega_d, jit=False, **_):
-    solver_fn = jax.jit(floquet_dq_basic) if jit else floquet_dq_basic
+def bench_dq_basic(H0, H1, A, omega_d, to_jit=False, **_):
+    prop_fn = jit(propagator) if to_jit else propagator
+    solver_fn = jit(floquet_dq_basic) if to_jit else floquet_dq_basic
 
-    # warmup: warms up dynamiqs ODE JIT; also triggers our JIT compilation when jit=True
-    U = propagator(H0, H1, A, omega_d)
+    # warmup: warms up dynamiqs ODE JIT; also triggers if we have JIT compiled
+    U = prop_fn(H0, H1, A, omega_d)
     block_until_ready(solver_fn(U))
     del U; gc.collect()
 
     t0 = perf_counter()
-    U = propagator(H0, H1, A, omega_d)
+    U = prop_fn(H0, H1, A, omega_d)
     block_until_ready(U)
     t_prop = perf_counter() - t0
 
@@ -40,15 +40,16 @@ def bench_dq_basic(H0, H1, A, omega_d, jit=False, **_):
                 q=np.array(q), m=np.array(m))
 
 
-def bench_cayley(H0, H1, A, omega_d, cayley_phi=0, jit=False, **_):
-    solver_fn = jax.jit(floquet_cayley) if jit else floquet_cayley
+def bench_cayley(H0, H1, A, omega_d, cayley_phi=0, to_jit=False, **_):
+    prop_fn = jit(propagator) if to_jit else propagator
+    solver_fn = jit(floquet_cayley) if to_jit else floquet_cayley
 
-    U = propagator(H0, H1, A, omega_d)
+    U = prop_fn(H0, H1, A, omega_d)
     block_until_ready(solver_fn(U, cayley_phi))
     del U; gc.collect()
 
     t0 = perf_counter()
-    U = propagator(H0, H1, A, omega_d)
+    U = prop_fn(H0, H1, A, omega_d)
     block_until_ready(U)
     t_prop = perf_counter() - t0
 
@@ -62,9 +63,9 @@ def bench_cayley(H0, H1, A, omega_d, cayley_phi=0, jit=False, **_):
                 q=np.array(q), m=np.array(m))
 
 
-def bench_sambe_sparse(H0, H1, A, omega_d, sambe_copies=12, jit=False, **_):
-    solver_fn = (jax.jit(floquet_sambe, static_argnames=('N', 'dense'))
-                 if jit else floquet_sambe)
+def bench_sambe_sparse(H0, H1, A, omega_d, sambe_copies=12, to_jit=False, **_):
+    solver_fn = (jit(floquet_sambe, static_argnames=('N', 'dense'))
+                 if to_jit else floquet_sambe)
 
     block_until_ready(solver_fn(H0, H1, A, omega_d, N=sambe_copies, dense=False))
     gc.collect()
@@ -78,9 +79,9 @@ def bench_sambe_sparse(H0, H1, A, omega_d, sambe_copies=12, jit=False, **_):
     return dict(t_total=t_total, q=np.array(q), m=np.array(m))
 
 
-def bench_sambe_dense(H0, H1, A, omega_d, sambe_copies=12, jit=False, **_):
-    solver_fn = (jax.jit(floquet_sambe, static_argnames=('N', 'dense'))
-                 if jit else floquet_sambe)
+def bench_sambe_dense(H0, H1, A, omega_d, sambe_copies=12, to_jit=False, **_):
+    solver_fn = (jit(floquet_sambe, static_argnames=('N', 'dense'))
+                 if to_jit else floquet_sambe)
 
     block_until_ready(solver_fn(H0, H1, A, omega_d, N=sambe_copies, dense=True))
     gc.collect()

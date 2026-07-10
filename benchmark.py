@@ -4,7 +4,7 @@ import resource
 import sys
 import numpy as np
 
-import jax
+from jax import devices as jdevices
 from jax.numpy.linalg import norm
 import jax.random as jrand
 import dynamiqs as dq
@@ -23,7 +23,7 @@ def _gpu_peak_mb(is_gpu):
     """Peak memory of this process (on the GPU), in MB. None if not supported"""
     if not is_gpu:
         return None
-    stats = jax.devices()[0].memory_stats()
+    stats = jdevices()[0].memory_stats()
     if not stats:
         return None
     return stats['peak_bytes_in_use'] / 1024**2
@@ -47,8 +47,8 @@ def load_rows(path):
 
 def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, output_path,
         basic_dir=None):
-    is_jit = solver.endswith('_jit')
-    base_solver = solver.removesuffix('_jit') if is_jit else solver
+    to_jit = solver.endswith('_jit')
+    base_solver = solver.removesuffix('_jit') if to_jit else solver
     bench_fn = BENCH_FNS[base_solver]
     is_gpu = device.startswith('gpu')
 
@@ -65,7 +65,7 @@ def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, outp
         basic_path = os.path.join(_basic_dir, f'basic_d{d}_run{run_index}.npy')
         basic_ref = load_rows(basic_path)[0]
     metrics = bench_fn(H0, H1, A, omega_d,
-                       cayley_phi=cayley_phi, sambe_copies=sambe_copies, jit=is_jit)
+                       cayley_phi=cayley_phi, sambe_copies=sambe_copies, to_jit=to_jit)
 
     if base_solver == 'basic':
         row = dict(solver=solver, device=device, run_index=run_index, d=d, **metrics)
