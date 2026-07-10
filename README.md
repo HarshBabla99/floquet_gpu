@@ -29,5 +29,28 @@ You might have to delete a whole bunch of output files.
 
 4. For all the JAX-based solvers (regardless of JIT), the solver is "warmed-up" with a single run. This triggers any compilation defined in my code, as well as any hidden compilation, defined by `dynamiqs`. I'm not sure if this is the best decision, but you should keep this in mind while interpreting the results.
 
+## Results:
+
+It is most insightful to compare the results after JIT, on a CPU and the Hopper H200 GPU. You may look at the complete set of results in the [`out/plot.ipynb`](out/plot.ipynb) notebook. 
+![cpu_jit](figs/cpu_jit.png)
+![h200_jit](figs/h200_jit.png)
+
+Some key insights: 
+1. On a CPU, Dynamiqs is always as fast (or sometimes slightly faster) than QuTiP. On the GPU it is significantly faster
+2. On a CPU, Dynamiqs also consumes a lot less memory than QuTiP. However, on a GPU, Dynamiqs imposes a significant memory overhead on the host, presumably for storing the CUDA-context. This host-memory load is independent of the problem's dimension size. 
+3. On the GPU, for large dimensions, the Cayley transformation wins over the naive diagonalization of the propagator. On a CPU, these methods are comparable. 
+4. The Sambe/Shirley-space solver is always solver than the propagator-based solvers, and scales very poorly with distance. It also consumes a lot of memory. Therefore, it never offers a benefit. 
+5. The runtime and memory consumption is similar on the Hopper (H200) and Blackwell (B200) GPUs, as shown below. 
+![h200_jit](figs/h200_jit.png)
+![b200_jit](figs/b200_jit.png)
+6. For smaller dimensions, JIT noticeably improves the wall clock time (by several orders of magnitude). 
+For larger dimensions, the actual computational time dominates, and the improvement is not as noticeable. 
+This is true on both, CPU and GPU. 
+![cpu_jit](figs/cpu_nojit.png)
+![cpu_jit](figs/cpu_jit.png)
+![cpu_jit](figs/h200_nojit.png)
+![cpu_jit](figs/h200_jit.png)
+7. The results from all methods match, up to numerical precision. I haven't included the comparison here, but you may take a look in the [`out/plot.ipynb`](out/plot.ipynb) notebook. 
+
 ## Caution:
 `.submit.sh` is written by Claude! So please don't blame Harsh if your computer blows up. 
