@@ -100,6 +100,6 @@ BENCH_FNS = {
     'basic':        bench_basic,
     'dq_basic':     bench_dq_basic,
     'cayley':       bench_cayley,
-    'sambe_sparse': bench_sambe_sparse,
-    'sambe_dense':  bench_sambe_dense,
+    #'sambe_sparse': bench_sambe_sparse,
+    #'sambe_dense':  bench_sambe_dense,
 }

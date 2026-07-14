@@ -7,10 +7,11 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
-NUM_JOBS_PER_SOLVER=5
+NUM_JOBS_PER_SOLVER=10
 DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096)
-NON_BASIC_SOLVERS=('dq_basic' 'cayley' 'sambe_sparse' 'sambe_dense'
-                   'dq_basic_jit' 'cayley_jit' 'sambe_sparse_jit' 'sambe_dense_jit')
+# NON_BASIC_SOLVERS=('dq_basic' 'cayley' 'sambe_sparse' 'sambe_dense'
+#                    'dq_basic_jit' 'cayley_jit' 'sambe_sparse_jit' 'sambe_dense_jit')
+NON_BASIC_SOLVERS=('dq_basic' 'cayley' 'dq_basic_jit' 'cayley_jit')
 
 BASIC_PARTITION='day'
 BASIC_DIR='out/cpu'

@@ -6,9 +6,9 @@ import numpy as np
 dq.set_precision('double')
 dq.set_progress_meter(False)
 
+N_steps = 128
 rtol_atol = 1e-8
-method = dq.method.Tsit5(rtol=rtol_atol, atol=rtol_atol)
-#method = dq.method.Euler(dt=1e-4)
+method = dq.method.Expm()
 options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
 
 ##
@@ -17,10 +17,14 @@ options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
 def propagator(H0, H1, A, omega_d):
     """Get the propagator given a drift Hamiltonian, drive Hamiltonian,
     drive amplitude, and drive frequency."""
-    H = dq.constant(H0) + dq.modulated(lambda t: A * jnp.cos(omega_d * t), H1)
     T = 2.0 * jnp.pi / omega_d
-    ts = jnp.array([T])
-    seprop_result = dq.sepropagator(H, ts, method=method, options=options)
+    dt = T / N_steps
+
+    times = jnp.arange(N_steps + 1) * dt
+    t_mid = (jnp.arange(N_steps) + 0.5) * dt
+
+    H = dq.constant(H0) + dq.pwc(times, A * jnp.cos(omega_d * t_mid), H1)
+    seprop_result = dq.sepropagator(H, [T], method=method, options=options)
     return seprop_result.final_propagator
 
 def post_process_qutip(quasienergies, evecs, omega_d):
