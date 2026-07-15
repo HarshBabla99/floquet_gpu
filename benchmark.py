@@ -43,8 +43,7 @@ def load_rows(path):
                 break
     return rows
 
-def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, output_path,
-        basic_dir=None):
+def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, output_path):
 
     # Get the solver and device
     bench_fn = BENCH_FNS[solver]
@@ -60,13 +59,9 @@ def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, outp
     H0 = random_hermitian((d, d), k0)
     H1 = random_hermitian((d, d), k1)
 
-    # Save directory
-    _basic_dir = basic_dir if basic_dir is not None else os.path.dirname(output_path)
-    basic_path = os.path.join(_basic_dir, f'basic_d{d}_run{run_index}.npy')
-
     # Run the benchmark (one warmup and one actual run)
     metrics = bench_fn(H0, H1, A, omega_d,
-                       cayley_phi=cayley_phi, sambe_copies=sambe_copies, to_jit=to_jit)
+                       cayley_phi=cayley_phi, sambe_copies=sambe_copies)
 
     # Results
     row = dict(
@@ -101,9 +96,6 @@ if __name__ == '__main__':
     parser.add_argument('--run-index', type=int, required=True)
     parser.add_argument('--device',    default='cpu',
                         help='Device identifier passed to dq.set_device; also used as output subdirectory')
-    parser.add_argument('--basic-dir', default=None,
-                        help='Directory containing basic reference .npy files; '
-                             'defaults to the same directory as the output file')
     args = parser.parse_args()
 
     A = 1.0
@@ -126,5 +118,4 @@ if __name__ == '__main__':
         A=A, omega_d=omega_d,
         cayley_phi=cayley_phi,
         sambe_copies=sambe_copies,
-        output_path=output_path,
-        basic_dir=args.basic_dir)
+        output_path=output_path)
