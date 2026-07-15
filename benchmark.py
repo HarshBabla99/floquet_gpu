@@ -11,8 +11,6 @@ import dynamiqs as dq
 
 from bench_solvers import BENCH_FNS
 
-ALL_SOLVERS = list(BENCH_FNS) + [k + '_jit' for k in BENCH_FNS if k != 'basic']
-
 def _peak_rss_mb():
     """Peak memory of this process (on host), in MB."""
     ru_maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -47,61 +45,58 @@ def load_rows(path):
 
 def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, output_path,
         basic_dir=None):
-    to_jit = solver.endswith('_jit')
-    base_solver = solver.removesuffix('_jit') if to_jit else solver
-    bench_fn = BENCH_FNS[base_solver]
+
+    # Get the solver and device
+    bench_fn = BENCH_FNS[solver]
     is_gpu = device.startswith('gpu')
 
+    # CPU and GPU memory log
     mem_start = _peak_rss_mb()
     gpu_mem_start = _gpu_peak_mb(is_gpu)
     print(f'Starting [{device}/{solver} run={run_index} d={d}] \t peak RSS={mem_start:.1f} MB', flush=True)
 
+    # Random matrices
     k0, k1 = jrand.split(jrand.fold_in(jrand.key(run_index), d))
     H0 = random_hermitian((d, d), k0)
     H1 = random_hermitian((d, d), k1)
 
-    if base_solver != 'basic':
-        _basic_dir = basic_dir if basic_dir is not None else os.path.dirname(output_path)
-        basic_path = os.path.join(_basic_dir, f'basic_d{d}_run{run_index}.npy')
-        basic_ref = load_rows(basic_path)[0]
+    # Save directory
+    _basic_dir = basic_dir if basic_dir is not None else os.path.dirname(output_path)
+    basic_path = os.path.join(_basic_dir, f'basic_d{d}_run{run_index}.npy')
+
+    # Run the benchmark (one warmup and one actual run)
     metrics = bench_fn(H0, H1, A, omega_d,
                        cayley_phi=cayley_phi, sambe_copies=sambe_copies, to_jit=to_jit)
 
-    if base_solver == 'basic':
-        row = dict(solver=solver, device=device, run_index=run_index, d=d, **metrics)
-    else:
-        innerp = np.sum(basic_ref['m'].conj() * metrics['m'], axis=1)
+    # Results
+    row = dict(
+        solver=solver, device=device, run_index=run_index, d=d,
+        t_total=metrics['t_total'],
+        t_prop=metrics['t_prop'],
+        t_solver=metrics['t_solver'],
+    )
 
-        row = dict(
-            solver=solver, device=device, run_index=run_index, d=d,
-            t_total=metrics['t_total'],
-            qerr=float(np.max(np.abs(basic_ref['q'] - metrics['q']))),
-            merr=float(np.max(1.0 - np.abs(innerp)**2)),
-        )
-        if 't_prop' in metrics:
-            row['t_prop'] = metrics['t_prop']
-            row['t_solver'] = metrics['t_solver']
-
+    # CPU and GPU memory log
     mem_final = _peak_rss_mb()
     row['mem_total'] = mem_final - mem_start
-
     if is_gpu:
         gpu_mem_final = _gpu_peak_mb(is_gpu)
         row['mem_gpu'] = (gpu_mem_final - gpu_mem_start
                           if gpu_mem_final is not None and gpu_mem_start is not None
                           else None)
 
+    # Save results
     with open(output_path, 'ab') as f:
         np.save(f, row)
 
+    # Print results
     final_str = f'Finished [{device}/{solver} run={run_index} d={d}] \t peak RSS={mem_final:.1f} MB \t'
     final_str += f't_total={metrics["t_total"]:.3f}s'
-    final_str += f'\tqerr={row["qerr"]:.3e} \t merr={row["merr"]:.3e}' if 'qerr' in row else ''
     print(final_str, flush=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--solver',    required=True, choices=ALL_SOLVERS)
+    parser.add_argument('--solver',    required=True, choices=list(BENCH_FNS))
     parser.add_argument('--dim',       type=int, required=True)
     parser.add_argument('--run-index', type=int, required=True)
     parser.add_argument('--device',    default='cpu',
