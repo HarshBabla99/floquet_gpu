@@ -41,7 +41,8 @@ submit_solver() {
 
     # Bake solver/device into the environment for the batch script
     [[ "${device:0:3}" == "gpu" ]] && local jax_plat="cuda,cpu" || local jax_plat="cpu"
-    export SOLVER="${solver}" DEVICE="${device}" JAX_PLAT="${jax_plat}"
+    [[ "${device:0:3}" == "gpu" ]] && local cublas_emu=1 || local cublas_emu=0
+    export SOLVER="${solver}" DEVICE="${device}" JAX_PLAT="${jax_plat}" CUBLAS_EMU="${cublas_emu}"
 
     local args=(
         --parsable
@@ -67,7 +68,7 @@ RUN_IDX=$(( SLURM_ARRAY_TASK_ID % NUM_JOBS_PER_SOLVER ))
 DIM=${DIMS[$DIM_IDX]}
 echo "Task ${SLURM_ARRAY_TASK_ID}: ${SOLVER} d=${DIM} r=${RUN_IDX} on ${DEVICE}"
 cd "${WORK_DIR}" && module load uv
-JAX_PLATFORMS=${JAX_PLAT} uv run python benchmark.py \
+CUBLAS_EMULATE_DOUBLE_PRECISION=${CUBLAS_EMU} JAX_PLATFORMS=${JAX_PLAT} uv run python benchmark.py \
     --solver "${SOLVER}" --dim "${DIM}" --run-index "${RUN_IDX}" \
     --device "${DEVICE}" --basic-dir "${BASIC_DIR}"
 BATCH
