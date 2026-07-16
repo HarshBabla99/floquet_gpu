@@ -43,4 +43,4 @@ site/
 .entropy/
 
 # Profile traces
-*/traces/*
+**/traces/**
