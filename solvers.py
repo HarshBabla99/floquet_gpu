@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 import dynamiqs as dq
-import numpy as np
+from jax import jit
 
 dq.set_precision('double')
 dq.set_progress_meter(False)
@@ -10,19 +10,21 @@ method = dq.method.Tsit5(rtol=rtol_atol, atol=rtol_atol)
 options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
 
 ##########
-# Helpers
+# Time-evolution to find the propagator
 ##########
-def propagator(H0, H1, A, omega_d):
-    """Get the propagator given a drift Hamiltonian, drive Hamiltonian,
-    drive amplitude, and drive frequency."""
-    H = dq.constant(H0) + dq.modulated(lambda t: A * jnp.cos(omega_d * t), H1)
+def get_Hamiltonian(H0, H1, A, omega_d):
+    """Return the time-dependent Hamiltonian."""
+    return dq.constant(H0) + dq.modulated(lambda t: A * jnp.cos(omega_d * t), H1)
+
+def propagator(H, omega_d):
+    """Get the propagator given a time-dependent Hamiltonian and frequency."""
     T = 2.0 * jnp.pi / omega_d
     ts = jnp.array([T])
     seprop_result = dq.sepropagator(H, ts, method=method, options=options)
     return seprop_result.final_propagator
 
 ##########
-# Solvers 
+# Diagonalize propagator to get Floquet solution
 ##########
 def floquet_dq_basic(U):
     # diagonalize the final propagator
@@ -51,3 +53,25 @@ def floquet_cayley(U, phi=0):
     lam = jnp.sum(jnp.conj(V) * (U @ V), axis=0)
 
     return lam, dq.asqarray(V)
+
+##########
+# Package everything together
+##########
+@jit
+def dq_basic(H0, H1, A, omega_d, **_):
+    H = get_Hamiltonian(H0, H1, A, omega_d)
+    U = propagator(H, omega_d)
+    out = floquet_dq_basic(U)
+    return out
+
+@jit
+def cayley(H0, H1, A, omega_d, cayley_phi=0, **_):
+    H = get_Hamiltonian(H0, H1, A, omega_d)
+    U = propagator(H, omega_d)
+    out = floquet_cayley(U, cayley_phi)
+    return out
+
+SOLVERS = {
+    'dq_basic': dq_basic,
+    'cayley': cayley
+}
