@@ -7,14 +7,14 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
-NUM_JOBS_PER_SOLVER=5
+NUM_JOBS_PER_SOLVER=10
 DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096)
 SOLVERS=('dq_basic' 'cayley')
 
 # Devices: name  partition  gpu_flag ('' for CPU)
-DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
-DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
-DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
+DEVICE_NAMES=(     'cpu'   'gpu_h200'     )
+DEVICE_PARTITIONS=('day'   'gpu_h200'     )
+DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1')
 
 BENCH_TIME='00:30:00'
 BENCH_MEM_PER_CPU='10G'
