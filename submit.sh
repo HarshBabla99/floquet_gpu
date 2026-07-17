@@ -37,7 +37,12 @@ submit_solver() {
 
     # Bake solver/device into the environment for the batch script
     [[ "${device:0:3}" == "gpu" ]] && local jax_plat="cuda,cpu" || local jax_plat="cpu"
-    export SOLVER="${solver}" DEVICE="${device}" JAX_PLAT="${jax_plat}"
+    
+    # GPU only: let XLA capture Tsit5's adaptive-step while-loop as a single CUDA graph 
+    # Requires CUDA >= 12.3.
+    [[ "${device:0:3}" == "gpu" ]] && local xla_flags="--xla_gpu_enable_command_buffer=+WHILE,+CONDITIONAL" || local xla_flags=""
+
+    export SOLVER="${solver}" DEVICE="${device}" JAX_PLAT="${jax_plat}" XLA_FLAGS="${xla_flags}"
 
     local args=(
         --parsable
@@ -63,7 +68,7 @@ RUN_IDX=$(( SLURM_ARRAY_TASK_ID % NUM_JOBS_PER_SOLVER ))
 DIM=${DIMS[$DIM_IDX]}
 echo "Task ${SLURM_ARRAY_TASK_ID}: ${SOLVER} d=${DIM} r=${RUN_IDX} on ${DEVICE}"
 cd "${WORK_DIR}" && module load uv
-JAX_PLATFORMS=${JAX_PLAT} uv run python benchmark.py \
+JAX_PLATFORMS=${JAX_PLAT} XLA_FLAGS=${XLA_FLAGS} uv run python benchmark.py \
     --solver "${SOLVER}" --dim "${DIM}" --run-index "${RUN_IDX}" \
     --device "${DEVICE}"
 BATCH
