@@ -8,19 +8,23 @@ set -euo pipefail
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
 NUM_JOBS_PER_SOLVER=5
-DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096)
-NON_BASIC_SOLVERS=('dq_basic' 'cayley' 'sambe_sparse' 'sambe_dense'
-                   'dq_basic_jit' 'cayley_jit' 'sambe_sparse_jit' 'sambe_dense_jit')
+DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096 8192)
+# NON_BASIC_SOLVERS=('dq_basic' 'cayley' 'sambe_sparse' 'sambe_dense'
+#                    'dq_basic_jit' 'cayley_jit' 'sambe_sparse_jit' 'sambe_dense_jit')
+NON_BASIC_SOLVERS=('dq_basic_jit' 'cayley_jit' 'dq_basic_ip_jit' 'cayley_ip_jit')
 
 BASIC_PARTITION='day'
 BASIC_DIR='out/cpu'
 
 # Non-basic devices: name  partition  gpu_flag ('' for CPU)
-DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
-DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
-DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
+# DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
+# DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
+# DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
+DEVICE_NAMES=(     'cpu'   'gpu_b200'     )
+DEVICE_PARTITIONS=('day'   'gpu_b200'     )
+DEVICE_GPU_FLAGS=( ''      '--gpus=b200:1')
 
-BENCH_TIME='00:30:00'
+BENCH_TIME='01:00:00'
 BENCH_MEM_PER_CPU='10G'
 MAIL_USER='harsh.babla@yale.edu'
 WORK_DIR="$(pwd)"
