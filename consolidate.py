@@ -23,6 +23,11 @@ def load_solver_runs(solver, out_dir='out'):
             by_dim.setdefault(row['d'], []).append(row)
     return by_dim
 
+def _row_key(row):
+    """Identity of a single benchmark run within one solver."""
+    return (row.get('d'), row.get('run_index'))
+
+
 def consolidate(out_dir, output_path, solvers=None):
 
     # Default list of solvers in benchmark.py
@@ -34,9 +39,43 @@ def consolidate(out_dir, output_path, solvers=None):
     # Load for each solver
     for solver in target:
         runs = load_solver_runs(solver, out_dir=out_dir)
-        data[solver] = runs
         n_rows = sum(len(rows) for rows in runs.values())
-        print(f'  {solver:15s}: {len(runs):2d} dims, {n_rows:4d} runs')
+
+        # Finding nothing means the raw per-run files are missing - either the
+        # jobs have not run, or they were deleted after a previous consolidation.
+        # Overwriting in that case would silently destroy results that are not
+        # reproducible without re-running the whole array, so keep what we have.
+        if n_rows == 0:
+            if solver in data:
+                kept = sum(len(rows) for rows in data[solver].values())
+                print(f'  {solver:15s}: no raw files found - KEEPING existing '
+                      f'{kept} run(s) already in {os.path.basename(output_path)}')
+            else:
+                print(f'  {solver:15s}: no raw files found, nothing to add')
+            continue
+
+        # Merge rather than replace, keyed on (dim, run_index). This makes the
+        # raw per-run files disposable: once a variant is consolidated its
+        # directory can be deleted, and a later batch of extra runs tops the
+        # file up instead of replacing it with only the new rows. Re-running an
+        # existing run_index overwrites that one row.
+        existing = data.get(solver, {})
+        merged = {dim: {_row_key(r): r for r in rows} for dim, rows in existing.items()}
+        added = replaced = 0
+        for dim, rows in runs.items():
+            slot = merged.setdefault(dim, {})
+            for r in rows:
+                key = _row_key(r)
+                if key in slot:
+                    replaced += 1
+                else:
+                    added += 1
+                slot[key] = r
+        data[solver] = {dim: [slot[k] for k in sorted(slot)] for dim, slot in sorted(merged.items())}
+
+        total = sum(len(rows) for rows in data[solver].values())
+        note = f' (+{added} new, {replaced} replaced)' if existing else ''
+        print(f'  {solver:15s}: {len(data[solver]):2d} dims, {total:4d} runs{note}')
 
     np.save(output_path, data)
     print(f'\nSaved to {output_path}')

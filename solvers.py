@@ -1,9 +1,19 @@
+import jax
 import jax.numpy as jnp
 import dynamiqs as dq
 from jax import jit
 
 dq.set_precision('double')
 dq.set_progress_meter(False)
+
+# Explicit phase markers. `jax.named_scope` is inert numerically - it only tags
+# each XLA instruction's `op_name` metadata with the enclosing scope. That
+# metadata survives compilation, so `profiling.phase_map()` can read the exact
+# instruction-to-phase assignment out of the compiled HLO instead of guessing it
+# from a timestamp boundary (which silently mis-split traces once cuBLAS matmuls
+# started appearing as bare `custom-call`s - see profiling.POST).
+PHASE_PROPAGATOR = 'PHASE_PROPAGATOR'
+PHASE_DIAGONALIZATION = 'PHASE_DIAGONALIZATION'
 
 rtol_atol = 1e-8
 method = dq.method.Tsit5(rtol=rtol_atol, atol=rtol_atol)
@@ -59,16 +69,20 @@ def floquet_cayley(U, phi=0):
 ##########
 @jit
 def dq_basic(H0, H1, A, omega_d, **_):
-    H = get_Hamiltonian(H0, H1, A, omega_d)
-    U = propagator(H, omega_d)
-    out = floquet_dq_basic(U)
+    with jax.named_scope(PHASE_PROPAGATOR):
+        H = get_Hamiltonian(H0, H1, A, omega_d)
+        U = propagator(H, omega_d)
+    with jax.named_scope(PHASE_DIAGONALIZATION):
+        out = floquet_dq_basic(U)
     return out
 
 @jit
 def cayley(H0, H1, A, omega_d, cayley_phi=0, **_):
-    H = get_Hamiltonian(H0, H1, A, omega_d)
-    U = propagator(H, omega_d)
-    out = floquet_cayley(U, cayley_phi)
+    with jax.named_scope(PHASE_PROPAGATOR):
+        H = get_Hamiltonian(H0, H1, A, omega_d)
+        U = propagator(H, omega_d)
+    with jax.named_scope(PHASE_DIAGONALIZATION):
+        out = floquet_cayley(U, cayley_phi)
     return out
 
 SOLVERS = {
