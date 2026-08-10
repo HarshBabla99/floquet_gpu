@@ -39,9 +39,54 @@ def bench_dq_basic(H0, H1, A, omega_d, to_jit=False, **_):
     return dict(t_prop=t_prop, t_solver=t_solver, t_total=t_prop + t_solver,
                 q=np.array(q), m=np.array(m))
 
+def bench_dq_basic_ip(H0, H1, A, omega_d, to_jit=False, **_):
+    prop_fn = jit(ip_propagator) if to_jit else ip_propagator
+    solver_fn = jit(floquet_dq_basic) if to_jit else floquet_dq_basic
+
+    # warmup: warms up dynamiqs ODE JIT; also triggers if we have JIT compiled
+    U = prop_fn(H0, H1, A, omega_d)
+    block_until_ready(solver_fn(U))
+    del U; gc.collect()
+
+    t0 = perf_counter()
+    U = prop_fn(H0, H1, A, omega_d)
+    block_until_ready(U)
+    t_prop = perf_counter() - t0
+
+    t1 = perf_counter()
+    out = solver_fn(U)
+    block_until_ready(out)
+    t_solver = perf_counter() - t1
+
+    q, m = post_process(*out, omega_d)
+    return dict(t_prop=t_prop, t_solver=t_solver, t_total=t_prop + t_solver,
+                q=np.array(q), m=np.array(m))
+
 
 def bench_cayley(H0, H1, A, omega_d, cayley_phi=0, to_jit=False, **_):
     prop_fn = jit(propagator) if to_jit else propagator
+    solver_fn = jit(floquet_cayley) if to_jit else floquet_cayley
+
+    U = prop_fn(H0, H1, A, omega_d)
+    block_until_ready(solver_fn(U, cayley_phi))
+    del U; gc.collect()
+
+    t0 = perf_counter()
+    U = prop_fn(H0, H1, A, omega_d)
+    block_until_ready(U)
+    t_prop = perf_counter() - t0
+
+    t1 = perf_counter()
+    out = solver_fn(U, cayley_phi)
+    block_until_ready(out)
+    t_solver = perf_counter() - t1
+
+    q, m = post_process(*out, omega_d)
+    return dict(t_prop=t_prop, t_solver=t_solver, t_total=t_prop + t_solver,
+                q=np.array(q), m=np.array(m))
+
+def bench_cayley_ip(H0, H1, A, omega_d, cayley_phi=0, to_jit=False, **_):
+    prop_fn = jit(ip_propagator) if to_jit else ip_propagator
     solver_fn = jit(floquet_cayley) if to_jit else floquet_cayley
 
     U = prop_fn(H0, H1, A, omega_d)
@@ -99,7 +144,9 @@ def bench_sambe_dense(H0, H1, A, omega_d, sambe_copies=12, to_jit=False, **_):
 BENCH_FNS = {
     'basic':        bench_basic,
     'dq_basic':     bench_dq_basic,
+    'dq_basic_ip':  bench_dq_basic_ip,
     'cayley':       bench_cayley,
-    'sambe_sparse': bench_sambe_sparse,
-    'sambe_dense':  bench_sambe_dense,
+    'cayley_ip':    bench_cayley_ip,
+    #'sambe_sparse': bench_sambe_sparse,
+    #'sambe_dense':  bench_sambe_dense,
 }

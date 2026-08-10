@@ -23,6 +23,33 @@ def propagator(H0, H1, A, omega_d):
     seprop_result = dq.sepropagator(H, ts, method=method, options=options)
     return seprop_result.final_propagator
 
+def ip_propagator(H0, H1, A, omega_d):
+    """Get the propagator, but perform numerics in the interaction picture. """
+
+    # diagonalize the drift Hamiltonian
+    # and transform H1 to the frame rotating with H0
+    # NOTE: if H0 is diagonal, and H1 is sparse then
+    # evals = H0.diag(), H1_tilde = H1
+    evals, evecs = H0.asdense()._eigh()
+    evecs = dq.asqarray(evecs)
+    H1_tilde = evecs.dag() @ H1 @ evecs
+
+    # time for a single period
+    T = 2.0 * jnp.pi / omega_d
+    ts = jnp.array([T])
+
+    # modulated Hamiltonian in the rotating frame
+    def H(t):
+        phases = dq.sparsedia_from_dict({0: jnp.exp(1j * evals * t)})
+        return A * jnp.cos(omega_d * t) * (phases @ H1_tilde @ phases.dag())
+
+    # interaction-picture propagator W(T), in the H0 eigenbasis
+    seprop_result = dq.sepropagator(dq.timecallable(H), ts, method=method, options=options)
+
+    # undo the interaction picture, then rotate back to the lab basis
+    U_tilde = seprop_result.final_propagator.elmul(jnp.exp(-1j * evals * T)[:, None])
+    return evecs @ U_tilde @ evecs.dag()
+
 def post_process_qutip(quasienergies, evecs, omega_d):
 
     # fold into the first Brillouin zone (-pi/T, pi/T]
