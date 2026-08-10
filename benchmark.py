@@ -11,7 +11,8 @@ import dynamiqs as dq
 
 from bench_solvers import BENCH_FNS
 
-ALL_SOLVERS = [k + '_jit' for k in BENCH_FNS if k != 'basic'] #+ list(BENCH_FNS)
+ALL_SOLVERS = ['basic'] + [k + '_jit' for k in BENCH_FNS if k != 'basic'] 
+#+ list(BENCH_FNS)
 
 def _peak_rss_mb():
     """Peak memory of this process (on host), in MB."""
@@ -57,7 +58,8 @@ def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, outp
     print(f'Starting [{device}/{solver} run={run_index} d={d}] \t peak RSS={mem_start:.1f} MB', flush=True)
 
     k0, k1 = jrand.split(jrand.fold_in(jrand.key(run_index), d))
-    H0 = random_hermitian((d, d), k0)
+    h0_scale=100
+    H0 = h0_scale*random_hermitian((d, d), k0)
     H1 = random_hermitian((d, d), k1)
 
     if base_solver != 'basic':
