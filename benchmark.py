@@ -11,7 +11,7 @@ import dynamiqs as dq
 
 from bench_solvers import BENCH_FNS
 
-ALL_SOLVERS = list(BENCH_FNS) + [k + '_jit' for k in BENCH_FNS if k != 'basic']
+ALL_SOLVERS = [k + '_jit' for k in BENCH_FNS if k != 'basic'] #+ list(BENCH_FNS)
 
 def _peak_rss_mb():
     """Peak memory of this process (on host), in MB."""
