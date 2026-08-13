@@ -18,6 +18,7 @@ dependencies = [
     "numpy>=2.4.4",
     "qutip==5.2.3",
     "scipy>=1.17.1",
+    "scqubits>=4.1.0",
     "tqdm>=4.67.3",
 ]
 
