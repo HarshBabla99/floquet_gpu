@@ -62,23 +62,35 @@ def run(solver, d, run_index, device, A, omega_d, cayley_phi, sambe_copies, outp
     H0 = h0_scale*random_hermitian((d, d), k0)
     H1 = random_hermitian((d, d), k1)
 
+    # Reference solution from the qutip 'basic' solver. It may be missing (e.g. the basic
+    # job timed out at this dim); in that case still record timing/memory, with NaN errors.
+    basic_ref = None
     if base_solver != 'basic':
         _basic_dir = basic_dir if basic_dir is not None else os.path.dirname(output_path)
         basic_path = os.path.join(_basic_dir, f'basic_d{d}_run{run_index}.npy')
-        basic_ref = load_rows(basic_path)[0]
+        try:
+            basic_ref = load_rows(basic_path)[0]
+        except (OSError, IndexError) as e:
+            print(f'WARNING: no basic reference at {basic_path} ({type(e).__name__}); '
+                  f'recording timings with qerr/merr=NaN', flush=True)
+
     metrics = bench_fn(H0, H1, A, omega_d,
                        cayley_phi=cayley_phi, sambe_copies=sambe_copies, to_jit=to_jit)
 
     if base_solver == 'basic':
         row = dict(solver=solver, device=device, run_index=run_index, d=d, **metrics)
     else:
-        innerp = np.sum(basic_ref['m'].conj() * metrics['m'], axis=1)
+        if basic_ref is None:
+            qerr = merr = float('nan')
+        else:
+            innerp = np.sum(basic_ref['m'].conj() * metrics['m'], axis=1)
+            qerr = float(np.max(np.abs(basic_ref['q'] - metrics['q'])))
+            merr = float(np.max(1.0 - np.abs(innerp)**2))
 
         row = dict(
             solver=solver, device=device, run_index=run_index, d=d,
             t_total=metrics['t_total'],
-            qerr=float(np.max(np.abs(basic_ref['q'] - metrics['q']))),
-            merr=float(np.max(1.0 - np.abs(innerp)**2)),
+            qerr=qerr, merr=merr, ref_missing=basic_ref is None,
         )
         if 't_prop' in metrics:
             row['t_prop'] = metrics['t_prop']
