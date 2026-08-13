@@ -1,0 +1,3 @@
+v0 but with interaction picture data
+gives 2-3x speedup for random H0 and H1. 
+Also, increased spectral norm of H0 to 10
