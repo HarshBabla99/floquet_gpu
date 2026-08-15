@@ -8,6 +8,11 @@ dq.set_progress_meter(False)
 
 rtol_atol = 1e-8
 method = dq.method.Tsit5(rtol=rtol_atol, atol=rtol_atol)
+# QuTiP's own Tsitouras 5/4 implementation, so the reference uses the same
+# order-5 adaptive RK as dynamiqs. QuTiP's default ('adams', a variable-order
+# multistep) is ~35x less accurate at this tolerance once ||H||*T is large,
+# which made qerr measure the reference's error rather than the solvers'.
+qutip_method = 'tsit5'
 #method = dq.method.Euler(dt=1e-4)
 options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
 
@@ -89,7 +94,8 @@ def post_process(evals, evecs, omega_d):
 ##
 def floquet_basic(H, omega_d):
     T = 2.0 * np.pi / omega_d
-    fbasis = qt.FloquetBasis(H, T, options={'rtol': rtol_atol, 'atol': rtol_atol})
+    fbasis = qt.FloquetBasis(H, T, options={'rtol': rtol_atol, 'atol': rtol_atol,
+                                            'method': qutip_method})
     f_modes_t = fbasis.mode(0.0, data=True).to_array()
     return fbasis.e_quasi, f_modes_t
 
