@@ -4,6 +4,7 @@ import resource
 import sys
 import numpy as np
 import scqubits as scq
+from scipy.optimize import linear_sum_assignment
 
 from jax import devices as jdevices
 from jax.numpy.linalg import norm
@@ -119,6 +120,18 @@ def load_rows(path):
                 break
     return rows
 
+def compare_to_reference(q_ref, m_ref, q_test, m_test):
+    """Compare quasienergies/modes against the reference, pairing modes by maximum
+    overlap (not sorted by quasienergy position).
+    Both arrays shapes = (n_modes, hilbert_dim).
+    """
+    overlap = np.abs(m_ref.conj() @ m_test.T)**2
+    ref_idx, test_idx = linear_sum_assignment(-overlap)
+
+    merr = float(np.max(1.0 - overlap[ref_idx, test_idx]))
+    qerr = float(np.max(np.abs(q_ref[ref_idx] - q_test[test_idx])))
+    return qerr, merr
+
 def run(solver, d, run_index, device, cayley_phi, sambe_copies, output_path,
         basic_dir=None):
     to_jit = solver.endswith('_jit')
@@ -155,9 +168,8 @@ def run(solver, d, run_index, device, cayley_phi, sambe_copies, output_path,
         if basic_ref is None:
             qerr = merr = float('nan')
         else:
-            innerp = np.sum(basic_ref['m'].conj() * metrics['m'], axis=1)
-            qerr = float(np.max(np.abs(basic_ref['q'] - metrics['q'])))
-            merr = float(np.max(1.0 - np.abs(innerp)**2))
+            qerr, merr = compare_to_reference(basic_ref['q'], basic_ref['m'],
+                                              metrics['q'], metrics['m'])
 
         row = dict(
             solver=solver, device=device, run_index=run_index, d=d,
