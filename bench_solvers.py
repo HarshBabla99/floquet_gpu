@@ -147,6 +147,6 @@ BENCH_FNS = {
     'dq_basic_ip':  bench_dq_basic_ip,
     'cayley':       bench_cayley,
     'cayley_ip':    bench_cayley_ip,
-    #'sambe_sparse': bench_sambe_sparse,
-    #'sambe_dense':  bench_sambe_dense,
+    'sambe_sparse': bench_sambe_sparse,
+    'sambe_dense':  bench_sambe_dense,
 }
