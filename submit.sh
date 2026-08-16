@@ -10,12 +10,16 @@ set -euo pipefail
 NUM_JOBS_PER_SOLVER=5
 # DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096 8192)
 DIMS=(5 10 20 40 80 160 320)
-NON_BASIC_SOLVERS=('dq_basic_jit' 'cayley_jit' 'dq_basic_ip_jit' 'cayley_ip_jit')
+# (frame) x (diagonalizer) x (polar projection), as built by the bench_solvers factory
+BENCH_SOLVERS=('lab_basic'    'lab_basic_polar'    'lab_cayley'    'lab_cayley_polar'
+               'ip_basic'     'ip_basic_polar'     'ip_cayley'     'ip_cayley_polar')
 
-BASIC_PARTITION='day'
-BASIC_DIR='out/cpu'
+# Reference: stock QuTiP FloquetBasis at ref_rtol_atol (1e-12). CPU only.
+REF_SOLVER='ref'
+REF_PARTITION='day'
+REF_DIR='out/cpu'
 
-# Non-basic devices: name  partition  gpu_flag ('' for CPU)
+# Benchmark devices: name  partition  gpu_flag ('' for CPU)
 # DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 # DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 # DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
@@ -23,24 +27,26 @@ DEVICE_NAMES=(     'cpu'   'gpu_b200'     )
 DEVICE_PARTITIONS=('day'   'gpu_b200'     )
 DEVICE_GPU_FLAGS=( ''      '--gpus=b200:1')
 
-BENCH_TIME='02:00:00'
+BENCH_TIME='00:30:00'
+REF_TIME='02:00:00'
 BENCH_MEM_PER_CPU='10G'
 MAIL_USER='harsh.babla@yale.edu'
 WORK_DIR="$(pwd)"
 
 # Derived; exported so batch scripts receive them via SLURM's --export=ALL default
 NUM_DIMS=${#DIMS[@]}
-export NUM_JOBS_PER_SOLVER NUM_DIMS BASIC_DIR WORK_DIR
+export NUM_JOBS_PER_SOLVER NUM_DIMS REF_DIR WORK_DIR
 export DIMS_STR="${DIMS[*]}"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# submit_solver SOLVER DEVICE PARTITION GPU_FLAG DEP_STR
+# submit_solver SOLVER DEVICE PARTITION GPU_FLAG DEP_STR TIME_LIMIT
 #   Submits a NUM_DIMS × NUM_JOBS_PER_SOLVER array for one solver on one device.
-#   DEP_STR: colon-separated SLURM job IDs, or '' for no dependency.
+#   DEP_STR:    colon-separated SLURM job IDs, or '' for no dependency.
+#   TIME_LIMIT: SLURM walltime (REF_TIME for the reference, BENCH_TIME otherwise).
 #   Prints the submitted job ID to stdout.
 # ──────────────────────────────────────────────────────────────────────────────
 submit_solver() {
-    local solver=$1 device=$2 partition=$3 gpu_flag=$4 dep_str=$5
+    local solver=$1 device=$2 partition=$3 gpu_flag=$4 dep_str=$5 time_limit=$6
 
     # Bake solver/device into the environment for the batch script
     [[ "${device:0:3}" == "gpu" ]] && local jax_plat="cuda,cpu" || local jax_plat="cpu"
@@ -53,7 +59,7 @@ submit_solver() {
         --job-name="${solver}_${device}"
         --ntasks=1 --nodes=1 --cpus-per-task=1
         --mem-per-cpu="${BENCH_MEM_PER_CPU}"
-        --time="${BENCH_TIME}"
+        --time="${time_limit}"
         --mail-type=BEGIN,END,FAIL
         --mail-user="${MAIL_USER}"
         -o "out/${device}/${solver}_out_%a.txt"
@@ -72,7 +78,7 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: ${SOLVER} d=${DIM} r=${RUN_IDX} on ${DEVICE}"
 cd "${WORK_DIR}" && module load uv
 JAX_PLATFORMS=${JAX_PLAT} uv run python benchmark.py \
     --solver "${SOLVER}" --dim "${DIM}" --run-index "${RUN_IDX}" \
-    --device "${DEVICE}" --basic-dir "${BASIC_DIR}"
+    --device "${DEVICE}" --ref-dir "${REF_DIR}"
 BATCH
 }
 
@@ -88,7 +94,7 @@ submit_consolidate() {
 
     sbatch \
         --parsable \
-        --partition="${BASIC_PARTITION}" \
+        --partition="${REF_PARTITION}" \
         --job-name="consolidate_${name}" \
         --ntasks=1 --mem=5G --time=00:05:00 \
         --mail-type=BEGIN,END,FAIL \
@@ -104,20 +110,20 @@ uv run python consolidate.py \
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Phase 1: basic (qutip, always CPU)
+# Phase 1: reference (qutip FloquetBasis @ 1e-12, always CPU)
 # ──────────────────────────────────────────────────────────────────────────────
-mkdir -p "${BASIC_DIR}"
-echo "=== Phase 1: basic ==="
-BASIC_JOB=$(submit_solver 'basic' 'cpu' "${BASIC_PARTITION}" '' '')
-echo "  Job array: ${BASIC_JOB}"
+mkdir -p "${REF_DIR}"
+echo "=== Phase 1: ${REF_SOLVER} ==="
+REF_JOB=$(submit_solver "${REF_SOLVER}" 'cpu' "${REF_PARTITION}" '' '' "${REF_TIME}")
+echo "  Job array: ${REF_JOB}"
 
-# Consolidate after the basic job finishes
-CONSOLIDATE_JOB=$(submit_consolidate 'basic' "${WORK_DIR}/${BASIC_DIR}" \
-    "${WORK_DIR}/out/basic.npy" 'basic' "${BASIC_JOB}")
+# Consolidate after the reference job finishes
+CONSOLIDATE_JOB=$(submit_consolidate "${REF_SOLVER}" "${WORK_DIR}/${REF_DIR}" \
+    "${WORK_DIR}/out/${REF_SOLVER}.npy" "${REF_SOLVER}" "${REF_JOB}")
 echo "  Consolidate → ${CONSOLIDATE_JOB}"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Phase 2: non-basic solvers, one device at a time.
+# Phase 2: benchmark solvers, one device at a time.
 # Within a device all solver arrays run in parallel; consolidation waits for all.
 # ──────────────────────────────────────────────────────────────────────────────
 for i in "${!DEVICE_NAMES[@]}"; do
@@ -126,12 +132,12 @@ for i in "${!DEVICE_NAMES[@]}"; do
     GPU_FLAG="${DEVICE_GPU_FLAGS[$i]}"
 
     echo ""
-    echo "=== Phase 2.${i}: non-basic on ${DEVICE} (partition=${PARTITION}) ==="
+    echo "=== Phase 2.${i}: benchmark solvers on ${DEVICE} (partition=${PARTITION}) ==="
     mkdir -p "out/${DEVICE}"
 
     SOLVER_JOB_IDS=()
-    for solver in "${NON_BASIC_SOLVERS[@]}"; do
-        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" "${BASIC_JOB}")
+    for solver in "${BENCH_SOLVERS[@]}"; do
+        jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" "${REF_JOB}" "${BENCH_TIME}")
         SOLVER_JOB_IDS+=("${jid}")
         echo "  ${solver} → ${jid}"
     done
@@ -140,6 +146,6 @@ for i in "${!DEVICE_NAMES[@]}"; do
 
     # Consolidate after all solver arrays finish (afterany = regardless of exit status)
     CONSOLIDATE_JOB=$(submit_consolidate "${DEVICE}" "${WORK_DIR}/out/${DEVICE}" \
-        "${WORK_DIR}/out/${DEVICE}.npy" "${NON_BASIC_SOLVERS[*]}" "${SOLVER_DEP}")
+        "${WORK_DIR}/out/${DEVICE}.npy" "${BENCH_SOLVERS[*]}" "${SOLVER_DEP}")
     echo "  Consolidate → ${CONSOLIDATE_JOB}"
 done

@@ -11,11 +11,12 @@ from jax.numpy.linalg import norm
 import jax.random as jrand
 import dynamiqs as dq
 
-from bench_solvers import BENCH_FNS
+from bench_solvers import BENCH_FNS, REFERENCE_SOLVER
 from solvers import hamiltonian_norm
 
-ALL_SOLVERS = ['basic'] + [k + '_jit' for k in BENCH_FNS if k != 'basic'] 
-#+ list(BENCH_FNS)
+# jit is now an axis of the bench factory, not a name suffix, so the registry keys
+# are the solver names verbatim.
+ALL_SOLVERS = list(BENCH_FNS)
 
 ####################################################################################################
 # Floquet models
@@ -134,10 +135,8 @@ def compare_to_reference(q_ref, m_ref, q_test, m_test):
     return qerr, merr
 
 def run(solver, d, run_index, device, cayley_phi, output_path,
-        basic_dir=None):
-    to_jit = solver.endswith('_jit')
-    base_solver = solver.removesuffix('_jit') if to_jit else solver
-    bench_fn = BENCH_FNS[base_solver]
+        ref_dir=None):
+    bench_fn = BENCH_FNS[solver]
     is_gpu = device.startswith('gpu')
 
     mem_start = _peak_rss_mb()
@@ -161,39 +160,37 @@ def run(solver, d, run_index, device, cayley_phi, output_path,
         A_abs=float(np.abs(A)),   # A is complex-typed; its sign/phase is a gauge choice
     )
 
-    # Reference solution from the qutip 'basic' solver. It may be missing (e.g. the basic
-    # job timed out at this dim); in that case still record timing/memory, with NaN errors.
-    basic_ref = None
-    if base_solver != 'basic':
-        _basic_dir = basic_dir if basic_dir is not None else os.path.dirname(output_path)
-        basic_path = os.path.join(_basic_dir, f'basic_d{d}_run{run_index}.npy')
+    # Reference solution. It may be missing (e.g. the reference job timed out at this
+    # dim); in that case still record timing/memory, with NaN errors.
+    reference = None
+    if solver != REFERENCE_SOLVER:
+        _ref_dir = ref_dir if ref_dir is not None else os.path.dirname(output_path)
+        ref_path = os.path.join(_ref_dir, f'{REFERENCE_SOLVER}_d{d}_run{run_index}.npy')
         try:
-            basic_ref = load_rows(basic_path)[0]
+            reference = load_rows(ref_path)[0]
         except (OSError, IndexError) as e:
-            print(f'WARNING: no basic reference at {basic_path} ({type(e).__name__}); '
+            print(f'WARNING: no reference at {ref_path} ({type(e).__name__}); '
                   f'recording timings with qerr/merr=NaN', flush=True)
 
-    metrics = bench_fn(H0, H1, A, omega_d, cayley_phi=cayley_phi, to_jit=to_jit)
+    metrics = bench_fn(H0, H1, A, omega_d, cayley_phi=cayley_phi)
 
-    if base_solver == 'basic':
+    if solver == REFERENCE_SOLVER:
         row = dict(solver=solver, device=device, run_index=run_index, d=d,
                    **model_info, **metrics)
     else:
-        if basic_ref is None:
+        if reference is None:
             qerr = merr = float('nan')
         else:
-            qerr, merr = compare_to_reference(basic_ref['q'], basic_ref['m'],
+            qerr, merr = compare_to_reference(reference['q'], reference['m'],
                                               metrics['q'], metrics['m'])
 
         row = dict(
             solver=solver, device=device, run_index=run_index, d=d, **model_info,
-            t_total=metrics['t_total'],
-            qerr=qerr, merr=merr, ref_missing=basic_ref is None,
+            t_total=metrics['t_total'], t_prop=metrics['t_prop'],
+            t_polar=metrics['t_polar'], t_diag=metrics['t_diag'],
+            qerr=qerr, merr=merr, ref_missing=reference is None,
             nonunit_max=metrics['nonunit_max'],
         )
-        if 't_prop' in metrics:
-            row['t_prop'] = metrics['t_prop']
-            row['t_solver'] = metrics['t_solver']
 
     mem_final = _peak_rss_mb()
     row['mem_total'] = mem_final - mem_start
@@ -220,8 +217,8 @@ if __name__ == '__main__':
     parser.add_argument('--run-index', type=int, required=True)
     parser.add_argument('--device',    default='cpu',
                         help='Device identifier passed to dq.set_device; also used as output subdirectory')
-    parser.add_argument('--basic-dir', default=None,
-                        help='Directory containing basic reference .npy files; '
+    parser.add_argument('--ref-dir', default=None,
+                        help=f'Directory containing {REFERENCE_SOLVER}_*.npy reference files; '
                              'defaults to the same directory as the output file')
     args = parser.parse_args()
 
@@ -241,4 +238,4 @@ if __name__ == '__main__':
         device=args.device,
         cayley_phi=cayley_phi,
         output_path=output_path,
-        basic_dir=args.basic_dir)
+        ref_dir=args.ref_dir)
