@@ -55,6 +55,32 @@ def ip_propagator(H0, H1, A, omega_d):
     U_tilde = seprop_result.final_propagator.elmul(jnp.exp(-1j * evals * T)[:, None])
     return evecs @ U_tilde @ evecs.dag()
 
+def nonunitarity(U):
+    """Compute deviation of the integrated propagator from unitarity.
+    Expected to grow linearly in ||H||*T. 
+    """
+    U = U.to_jax() if hasattr(U, 'to_jax') else jnp.asarray(U)
+    D = U.conj().T @ U - jnp.eye(U.shape[-1], dtype=U.dtype)
+    return float(jnp.abs(D).max())
+
+def hamiltonian_norm(X):
+    """Spectral norms of a Hermitian operator.
+
+    The spectral norm ||H||_2 (= largest |eigenvalue|) is the physically meaningful one:
+    ||H0||_2 * T is the phase accumulated over one drive period, which sets the step count
+    and hence the accuracy achievable at a given ODE tolerance.
+
+    A purely diagonal SparseDIAQArray is handled in O(N) straight from its stored diagonal,
+    so recording this neither densifies the operator nor inflates the peak-RSS memory metric.
+    Dense operators fall back to eigvalsh, which is O(N^3) and is the dominant cost here.
+    """
+    if isinstance(X, dq.SparseDIAQArray) and tuple(X.offsets) == (0,):
+        diag = X.diags[0]
+        return float(jnp.abs(diag).max())
+
+    A = X.to_jax() if hasattr(X, 'to_jax') else jnp.asarray(X)
+    return float(jnp.abs(jnp.linalg.eigvalsh(A)).max())
+
 def post_process_qutip(quasienergies, evecs, omega_d):
 
     # fold into the first Brillouin zone (-pi/T, pi/T]
@@ -97,7 +123,7 @@ def floquet_basic(H, omega_d):
     fbasis = qt.FloquetBasis(H, T, options={'rtol': rtol_atol, 'atol': rtol_atol,
                                             'method': qutip_method})
     f_modes_t = fbasis.mode(0.0, data=True).to_array()
-    return fbasis.e_quasi, f_modes_t
+    return fbasis.e_quasi, f_modes_t, fbasis.U(T).full()
 
 def floquet_dq_basic(U):
     # diagonalize the final propagator
@@ -126,43 +152,3 @@ def floquet_cayley(U, phi=0):
     lam = jnp.sum(jnp.conj(V) * (U @ V), axis=0)
 
     return lam, dq.asqarray(V)
-
-def floquet_sambe(H0, H1, A, omega_d, N, dense=False):
-    hilbert_dim = H0.dims[0]
-    T = 2.0 * jnp.pi / omega_d
-    num_blocks = 2 * N + 1
-    
-    # H0 in every block
-    Q = dq.eye(num_blocks) & H0
-
-    # Integers * omega_d ladder
-    omega_d_multiples = dq.sparsedia_from_dict({0: omega_d*jnp.arange(-N, N + 1)})
-    Q += omega_d_multiples & dq.eye_like(H0)
-
-    # Drive coupling
-    off_diag = jnp.ones(num_blocks-1, dtype=jnp.complex128)
-    S = dq.sparsedia_from_dict({1: off_diag, -1:off_diag}, dims=(num_blocks,))
-    Q += S & (0.5 * A * H1)
-
-    # Make Hermitian
-    Q = 0.5 * (Q + Q.dag())
-
-    # Diagonalize
-    if dense:
-        w, V = Q.asdense()._eigh()
-    else:
-        w, V = Q._eigh()
-
-    Vr = V.reshape(num_blocks, hilbert_dim, num_blocks * hilbert_dim)
-
-    # Select the physical states of the central (m=0) block
-    central_w = jnp.sum(jnp.abs(Vr[N]) ** 2, axis=0)
-    perm = jnp.argsort(central_w)[-hilbert_dim:]
-
-    evals = jnp.exp(-1j * w[perm] * T)
-
-    # t=0 Floquet mode |u_k(0)> = sum_m phi_k^{(m)}  (sum over Fourier blocks)
-    modes = jnp.sum(Vr[:, :, perm], axis=0)
-    modes = modes / jnp.linalg.norm(modes, axis=0, keepdims=True)
-
-    return evals, dq.asqarray(modes)

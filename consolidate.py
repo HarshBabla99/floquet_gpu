@@ -40,7 +40,7 @@ if __name__ == '__main__':
                         help='Output path (default: <out-dir>/_consolidated.npy)')
     parser.add_argument('--solvers', nargs='+', default=None,
                         help='Solvers to include (default: all). '
-                             'e.g. --solvers basic  or  --solvers dq_basic cayley sambe_sparse sambe_dense')
+                             'e.g. --solvers basic  or  --solvers dq_basic cayley')
     args = parser.parse_args()
 
     output_path = args.output or os.path.join(args.out_dir, '_consolidated.npy')

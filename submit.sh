@@ -8,9 +8,8 @@ set -euo pipefail
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
 NUM_JOBS_PER_SOLVER=5
-DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096 8192)
-# NON_BASIC_SOLVERS=('dq_basic' 'cayley' 'sambe_sparse' 'sambe_dense'
-#                    'dq_basic_jit' 'cayley_jit' 'sambe_sparse_jit' 'sambe_dense_jit')
+# DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096 8192)
+DIMS=(5 10 20 40 80 160 320)
 NON_BASIC_SOLVERS=('dq_basic_jit' 'cayley_jit' 'dq_basic_ip_jit' 'cayley_ip_jit')
 
 BASIC_PARTITION='day'
@@ -24,7 +23,7 @@ DEVICE_NAMES=(     'cpu'   'gpu_b200'     )
 DEVICE_PARTITIONS=('day'   'gpu_b200'     )
 DEVICE_GPU_FLAGS=( ''      '--gpus=b200:1')
 
-BENCH_TIME='01:00:00'
+BENCH_TIME='02:00:00'
 BENCH_MEM_PER_CPU='10G'
 MAIL_USER='harsh.babla@yale.edu'
 WORK_DIR="$(pwd)"

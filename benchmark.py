@@ -12,6 +12,7 @@ import jax.random as jrand
 import dynamiqs as dq
 
 from bench_solvers import BENCH_FNS
+from solvers import hamiltonian_norm
 
 ALL_SOLVERS = ['basic'] + [k + '_jit' for k in BENCH_FNS if k != 'basic'] 
 #+ list(BENCH_FNS)
@@ -132,7 +133,7 @@ def compare_to_reference(q_ref, m_ref, q_test, m_test):
     qerr = float(np.max(np.abs(q_ref[ref_idx] - q_test[test_idx])))
     return qerr, merr
 
-def run(solver, d, run_index, device, cayley_phi, sambe_copies, output_path,
+def run(solver, d, run_index, device, cayley_phi, output_path,
         basic_dir=None):
     to_jit = solver.endswith('_jit')
     base_solver = solver.removesuffix('_jit') if to_jit else solver
@@ -147,6 +148,19 @@ def run(solver, d, run_index, device, cayley_phi, sambe_copies, output_path,
     # H0, H1, A, omega_d = random_hermitian_matrices(run_index, d)
     H0, H1, A, omega_d = transmon_vary_resonator_dim(run_index, d)
 
+    # Characterise the model itself, so downstream analysis never has to rebuild it.
+    # ||H0||*T is the phase accumulated over one drive period; it, not the Hilbert
+    # dimension, is what sets the achievable accuracy at a given ODE tolerance.
+    # H1 is deliberately not measured: it is dense, so its norm costs an O(N^3) eigvalsh,
+    # and A*||H1|| is small next to ||H0|| anyway.
+    h0_norm = hamiltonian_norm(H0)
+    period = 2.0 * np.pi / omega_d
+    model_info = dict(
+        h0_norm=h0_norm,
+        omega_d=omega_d, T=period, h0_normT=h0_norm * period,
+        A_abs=float(np.abs(A)),   # A is complex-typed; its sign/phase is a gauge choice
+    )
+
     # Reference solution from the qutip 'basic' solver. It may be missing (e.g. the basic
     # job timed out at this dim); in that case still record timing/memory, with NaN errors.
     basic_ref = None
@@ -159,11 +173,11 @@ def run(solver, d, run_index, device, cayley_phi, sambe_copies, output_path,
             print(f'WARNING: no basic reference at {basic_path} ({type(e).__name__}); '
                   f'recording timings with qerr/merr=NaN', flush=True)
 
-    metrics = bench_fn(H0, H1, A, omega_d,
-                       cayley_phi=cayley_phi, sambe_copies=sambe_copies, to_jit=to_jit)
+    metrics = bench_fn(H0, H1, A, omega_d, cayley_phi=cayley_phi, to_jit=to_jit)
 
     if base_solver == 'basic':
-        row = dict(solver=solver, device=device, run_index=run_index, d=d, **metrics)
+        row = dict(solver=solver, device=device, run_index=run_index, d=d,
+                   **model_info, **metrics)
     else:
         if basic_ref is None:
             qerr = merr = float('nan')
@@ -172,9 +186,10 @@ def run(solver, d, run_index, device, cayley_phi, sambe_copies, output_path,
                                               metrics['q'], metrics['m'])
 
         row = dict(
-            solver=solver, device=device, run_index=run_index, d=d,
+            solver=solver, device=device, run_index=run_index, d=d, **model_info,
             t_total=metrics['t_total'],
             qerr=qerr, merr=merr, ref_missing=basic_ref is None,
+            nonunit_max=metrics['nonunit_max'],
         )
         if 't_prop' in metrics:
             row['t_prop'] = metrics['t_prop']
@@ -195,6 +210,7 @@ def run(solver, d, run_index, device, cayley_phi, sambe_copies, output_path,
     final_str = f'Finished [{device}/{solver} run={run_index} d={d}] \t peak RSS={mem_final:.1f} MB \t'
     final_str += f't_total={metrics["t_total"]:.3f}s'
     final_str += f'\tqerr={row["qerr"]:.3e} \t merr={row["merr"]:.3e}' if 'qerr' in row else ''
+    final_str += f'\tnonunit_max={row["nonunit_max"]:.3e}'
     print(final_str, flush=True)
 
 if __name__ == '__main__':
@@ -210,7 +226,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     cayley_phi = 0.
-    sambe_copies = 12
 
     out_dir = os.path.join('out', args.device)
     os.makedirs(out_dir, exist_ok=True)
@@ -225,6 +240,5 @@ if __name__ == '__main__':
         run_index=args.run_index,
         device=args.device,
         cayley_phi=cayley_phi,
-        sambe_copies=sambe_copies,
         output_path=output_path,
         basic_dir=args.basic_dir)
