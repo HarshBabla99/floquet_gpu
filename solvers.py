@@ -16,6 +16,9 @@ qutip_method = 'tsit5'
 #method = dq.method.Euler(dt=1e-4)
 options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
 
+# Tighter reference tolerance
+ref_rtol_atol = 1e-12
+
 ##
 # Helpers
 ##
@@ -62,6 +65,17 @@ def nonunitarity(U):
     U = U.to_jax() if hasattr(U, 'to_jax') else jnp.asarray(U)
     D = U.conj().T @ U - jnp.eye(U.shape[-1], dtype=U.dtype)
     return float(jnp.abs(D).max())
+
+def polar_project(U):
+    """Project to nearest unitary matrix to U.
+
+    U = W P with W unitary and P positive-semidefinite; W = A B^dag from the SVD
+    A S B^dag minimises ||U - W||_F over all unitaries. The exact propagator is unitary,
+    so this can only move an integrated propagator toward the truth.
+    """
+    X = U.to_jax() if hasattr(U, 'to_jax') else jnp.asarray(U)
+    A, _, Bh = jnp.linalg.svd(X, full_matrices=False)
+    return dq.asqarray(A @ Bh)
 
 def hamiltonian_norm(X):
     """Spectral norms of a Hermitian operator.
@@ -118,9 +132,11 @@ def post_process(evals, evecs, omega_d):
 ##
 # Solvers 
 ##
-def floquet_basic(H, omega_d):
+def floquet_basic(H, omega_d, tol=None):
+    """Reference solver: QuTiP's FloquetBasis, integrated at `tol` (default ref_rtol_atol)."""
+    tol = ref_rtol_atol if tol is None else tol
     T = 2.0 * np.pi / omega_d
-    fbasis = qt.FloquetBasis(H, T, options={'rtol': rtol_atol, 'atol': rtol_atol,
+    fbasis = qt.FloquetBasis(H, T, options={'rtol': tol, 'atol': tol,
                                             'method': qutip_method})
     f_modes_t = fbasis.mode(0.0, data=True).to_array()
     return fbasis.e_quasi, f_modes_t, fbasis.U(T).full()
