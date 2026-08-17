@@ -5,22 +5,27 @@ from jax import jit, block_until_ready
 from solvers import *
 
 
-def bench_ref(H0, H1, A, omega_d, **_):
-    """Reference: QuTiP's FloquetBasis at ref_rtol_atol.
+def make_qutip_bench(tol):
+    """QuTiP's FloquetBasis at integration tolerance `tol`.
 
-    Deliberately left monolithic (FloquetBasis propagates and diagonalizes in one call),
-    so the reference stays the stock QuTiP entry point rather than a variant of our own.
+    Deliberately left monolithic (FloquetBasis propagates and diagonalizes in one call).
+
+    Used twice: at ref_rtol_atol as the reference, and at rtol_atol as a benchmarked
+    solver on equal tolerance footing with the dynamiqs solvers.
     """
-    H = qt.QobjEvo([H0.to_qutip(), [H1.to_qutip(), lambda t: A * np.cos(omega_d * t)]])
+    def bench(H0, H1, A, omega_d, **_):
+        H = qt.QobjEvo([H0.to_qutip(), [H1.to_qutip(), lambda t: A * np.cos(omega_d * t)]])
 
-    t0 = perf_counter()
-    quasienergies, modes, U = floquet_basic(H, omega_d)
-    t_diag = perf_counter() - t0
+        t0 = perf_counter()
+        quasienergies, modes, U = floquet_basic(H, omega_d, tol=tol)
+        t_diag = perf_counter() - t0
 
-    q, m = post_process_qutip(quasienergies, modes, omega_d)
-    return dict(t_prop=float('nan'), t_polar=float('nan'), t_diag=t_diag,
-                t_total=t_diag, q=np.array(q), m=np.array(m),
-                nonunit_max=nonunitarity(U))
+        q, m = post_process_qutip(quasienergies, modes, omega_d)
+        return dict(t_prop=float('nan'), t_polar=float('nan'), t_diag=t_diag,
+                    t_total=t_diag, q=np.array(q), m=np.array(m),
+                    nonunit_max=nonunitarity(U))
+
+    return bench
 
 
 def make_bench(prop_fn, diag_fn, polar=False, to_jit=True, uses_phi=False):
@@ -86,6 +91,9 @@ def make_bench(prop_fn, diag_fn, polar=False, to_jit=True, uses_phi=False):
 
 REFERENCE_SOLVER = 'ref'
 
+# QuTiP has no GPU backend, so these must only ever be submitted to a CPU device.
+CPU_ONLY_SOLVERS = (REFERENCE_SOLVER, 'qutip')
+
 PROP_FNS = {
     'lab': propagator,
     'ip':  ip_propagator,
@@ -96,7 +104,10 @@ DIAG_FNS = {
     'cayley':   (floquet_cayley,     True),
 }
 
-BENCH_FNS = {REFERENCE_SOLVER: bench_ref}
+BENCH_FNS = {
+    REFERENCE_SOLVER: make_qutip_bench(ref_rtol_atol),   # ground truth, 1e-12
+    'qutip':          make_qutip_bench(rtol_atol),       # benchmarked, same tol as the rest
+}
 for _frame, _prop in PROP_FNS.items():
     for _diag_name, (_diag, _uses_phi) in DIAG_FNS.items():
         for _polar in (False, True):

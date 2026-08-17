@@ -10,9 +10,14 @@ set -euo pipefail
 NUM_JOBS_PER_SOLVER=5
 # DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096 8192)
 DIMS=(5 10 20 40 80 160 320)
-# (frame) x (diagonalizer) x (polar projection), as built by the bench_solvers factory
-BENCH_SOLVERS=('lab_basic'    'lab_basic_polar'    'lab_cayley'    'lab_cayley_polar'
+# (frame) x (diagonalizer) x (polar projection), as built by the bench_solvers factory,
+# plus stock QuTiP FloquetBasis at the same tolerance as everything else (rtol_atol).
+BENCH_SOLVERS=('qutip'
+               'lab_basic'    'lab_basic_polar'    'lab_cayley'    'lab_cayley_polar'
                'ip_basic'     'ip_basic_polar'     'ip_cayley'     'ip_cayley_polar')
+
+# QuTiP has no GPU backend; these are skipped on GPU devices (see Phase 2).
+CPU_ONLY_SOLVERS=('qutip')
 
 # Reference: stock QuTiP FloquetBasis at ref_rtol_atol (1e-12). CPU only.
 REF_SOLVER='ref'
@@ -23,12 +28,12 @@ REF_DIR='out/cpu'
 # DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 # DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 # DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
-DEVICE_NAMES=(     'cpu'   'gpu_b200'     )
-DEVICE_PARTITIONS=('day'   'gpu_b200'     )
-DEVICE_GPU_FLAGS=( ''      '--gpus=b200:1')
+DEVICE_NAMES=(     'cpu'      'gpu_b200'     )
+DEVICE_PARTITIONS=('day'      'gpu_b200'     )
+DEVICE_GPU_FLAGS=( ''         '--gpus=b200:1')
+DEVICE_BENCH_TIME=('02:00:00' '00:30:00')
 
-BENCH_TIME='00:30:00'
-REF_TIME='02:00:00'
+REF_TIME='08:00:00'
 BENCH_MEM_PER_CPU='10G'
 MAIL_USER='harsh.babla@yale.edu'
 WORK_DIR="$(pwd)"
@@ -130,6 +135,7 @@ for i in "${!DEVICE_NAMES[@]}"; do
     DEVICE="${DEVICE_NAMES[$i]}"
     PARTITION="${DEVICE_PARTITIONS[$i]}"
     GPU_FLAG="${DEVICE_GPU_FLAGS[$i]}"
+    BENCH_TIME="${DEVICE_BENCH_TIME[$i]}"
 
     echo ""
     echo "=== Phase 2.${i}: benchmark solvers on ${DEVICE} (partition=${PARTITION}) ==="
@@ -137,6 +143,12 @@ for i in "${!DEVICE_NAMES[@]}"; do
 
     SOLVER_JOB_IDS=()
     for solver in "${BENCH_SOLVERS[@]}"; do
+        # QuTiP would silently run on the CPU of a GPU node: wasteful, and the row
+        # would be mislabelled with the GPU device name.
+        if [[ -n "${GPU_FLAG}" ]] && [[ " ${CPU_ONLY_SOLVERS[*]} " == *" ${solver} "* ]]; then
+            echo "  ${solver} -> skipped (CPU-only solver on GPU device)"
+            continue
+        fi
         jid=$(submit_solver "${solver}" "${DEVICE}" "${PARTITION}" "${GPU_FLAG}" "${REF_JOB}" "${BENCH_TIME}")
         SOLVER_JOB_IDS+=("${jid}")
         echo "  ${solver} → ${jid}"
