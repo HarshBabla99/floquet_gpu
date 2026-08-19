@@ -2,7 +2,9 @@ import argparse
 import glob
 import os
 import numpy as np
-from benchmark import load_rows, ALL_SOLVERS
+
+from utils import load_rows
+from bench_solvers import BENCH_FNS
 
 
 def load_solver_runs(solver, out_dir='out'):
@@ -16,7 +18,7 @@ def load_solver_runs(solver, out_dir='out'):
 def consolidate(out_dir, output_path, solvers=None):
 
     # Default list of solvers in benchmark.py
-    target = solvers if solvers is not None else ALL_SOLVERS
+    target = solvers if solvers is not None else list(BENCH_FNS)
 
     # Load existing consolidated file, if exists
     data = np.load(output_path, allow_pickle=True).item() if os.path.exists(output_path) else {}

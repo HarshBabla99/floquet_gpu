@@ -3,6 +3,7 @@ from time import perf_counter
 import numpy as np
 from jax import jit, block_until_ready
 from solvers import *
+from utils import nonunitarity
 
 
 def make_qutip_bench(tol):
@@ -17,10 +18,10 @@ def make_qutip_bench(tol):
         H = qt.QobjEvo([H0.to_qutip(), [H1.to_qutip(), lambda t: A * np.cos(omega_d * t)]])
 
         t0 = perf_counter()
-        quasienergies, modes, U = floquet_basic(H, omega_d, tol=tol)
+        quasienergies, modes, U = qt_floquet(H, omega_d, tol=tol)
         t_diag = perf_counter() - t0
 
-        q, m = post_process_qutip(quasienergies, modes, omega_d)
+        q, m = qt_post_process(None, modes, omega_d, quasienergies=quasienergies)
         return dict(t_prop=float('nan'), t_polar=float('nan'), t_diag=t_diag,
                     t_total=t_diag, q=np.array(q), m=np.array(m),
                     nonunit_max=nonunitarity(U))
@@ -28,41 +29,48 @@ def make_qutip_bench(tol):
     return bench
 
 
-def make_bench(prop_fn, diag_fn, polar=False, to_jit=True, uses_phi=False):
+def make_bench(prop_fn, diag_fn, post_process_fn, polar_fn=None, 
+               qutip=False, to_jit=True, uses_phi=False):
     """Build a bench function from a propagator, a diagonalizer, and a polar-projection flag.
 
-    prop_fn  : `propagator` (lab frame) or `ip_propagator` (interaction picture)
-    diag_fn  : `floquet_dq_basic` (eig) or `floquet_cayley`
-    polar    : project the propagator onto the nearest unitary before diagonalizing
+    prop_fn  : func to form the single period propagator
+    diag_fn  : func to diagonalize the propagator
+    post_process_fn : func for postprocessing the results
+    polar_fn : func to project the propagator onto the nearest unitary before diagonalizing
+    qutip    : flag to convert arrays to Qobjs before benchmarking
     to_jit   : jit the propagator, projection and diagonalizer
     uses_phi : diag_fn takes the extra cayley_phi argument
 
-    Timings are split into t_prop / t_polar / t_diag. nonunit_max is measured on the
-    matrix actually handed to the diagonalizer, so with polar=True it reports the
-    projection's residual (~1e-15) rather than the raw integration error -- compare
-    against the matching polar=False solver to see what the projection removed.
+    Timings are split into t_prop / t_polar / t_diag. 
+    nonunit_max is measured on the matrix actually handed to the diagonalizer.
     """
     def bench(H0, H1, A, omega_d, cayley_phi=0.0, **_):
         prop = jit(prop_fn) if to_jit else prop_fn
-        proj = (jit(polar_project) if to_jit else polar_project) if polar else None
+        proj = (jit(polar_fn) if to_jit else polar_fn) if polar_fn else None
         diag = jit(diag_fn) if to_jit else diag_fn
+
+        if qutip:
+            H0 = H0.to_qutip()
+            H1 = H1.to_qutip()
 
         def diagonalize(U):
             return diag(U, cayley_phi) if uses_phi else diag(U)
 
-        # Always warm up: triggers JIT compilation, and dynamiqs' internals need it
-        # even when to_jit is False.
-        U = prop(H0, H1, A, omega_d)
-        if proj is not None:
-            U = proj(U)
-        block_until_ready(diagonalize(U))
-        del U; gc.collect()
+        # Always warm up: triggers JIT compilation
+        if to_jit:
+            U = prop(H0, H1, A, omega_d)
+            if proj is not None:
+                U = proj(U)
+            block_until_ready(diagonalize(U))
+            del U; gc.collect()
 
+        # Propagator
         t0 = perf_counter()
         U = prop(H0, H1, A, omega_d)
         block_until_ready(U)
         t_prop = perf_counter() - t0
 
+        # Polar projection
         t_polar = 0.0
         if proj is not None:
             t1 = perf_counter()
@@ -70,15 +78,17 @@ def make_bench(prop_fn, diag_fn, polar=False, to_jit=True, uses_phi=False):
             block_until_ready(U)
             t_polar = perf_counter() - t1
 
-        # Measured on the diagonalizer's input, outside every timed region.
+        # Measure nonunitariness of U (not timed)
         nonunit_max = nonunitarity(U)
 
+        # Diagonalize
         t2 = perf_counter()
         out = diagonalize(U)
         block_until_ready(out)
         t_diag = perf_counter() - t2
 
-        q, m = post_process(*out, omega_d)
+        # Post process (not timed)
+        q, m = post_process_fn(*out, omega_d)
         return dict(t_prop=t_prop, t_polar=t_polar, t_diag=t_diag,
                     t_total=t_prop + t_polar + t_diag,
                     q=np.array(q), m=np.array(m), nonunit_max=nonunit_max)
@@ -89,28 +99,47 @@ def make_bench(prop_fn, diag_fn, polar=False, to_jit=True, uses_phi=False):
 ####################################################################################################
 # Solver registry: (frame) x (diagonalizer) x (polar projection), all jitted.
 
+# Final registry
+BENCH_FNS = {}
+CPU_ONLY_SOLVERS = []
+
+# 1. Reference solver
 REFERENCE_SOLVER = 'ref'
+BENCH_FNS[REFERENCE_SOLVER] = make_qutip_bench(ref_rtol_atol)
+CPU_ONLY_SOLVERS.append(REFERENCE_SOLVER)
 
-# QuTiP has no GPU backend, so these must only ever be submitted to a CPU device.
-CPU_ONLY_SOLVERS = (REFERENCE_SOLVER, 'qutip')
-
+# 2. Qutip and dynamiqs solvers
 PROP_FNS = {
-    'lab': propagator,
-    'ip':  ip_propagator,
+    # name : (qutip function,  dynamiqs function)
+    'lab': (qt_lab_propagator, dq_lab_propagator),
+    'ip':  (qt_ip_propagator,  dq_ip_propagator),
 }
 DIAG_FNS = {
-    # name    : (function,           uses cayley_phi)
-    'basic':    (floquet_dq_basic,   False),
-    'cayley':   (floquet_cayley,     True),
+    # name    : (qutip function, dynamiqs function, uses cayley_phi)
+    'basic':    (qt_basic,       dq_basic,          False),
+    'cayley':   (qt_cayley,      dq_cayley,         True),
 }
+POLAR_PROJECT_FNS = [
+    qt_polar_project, dq_polar_project
+]
+POST_PROCESS_FNS = [
+    qt_post_process, dq_post_process
+]
 
-BENCH_FNS = {
-    REFERENCE_SOLVER: make_qutip_bench(ref_rtol_atol),   # ground truth, 1e-12
-    'qutip':          make_qutip_bench(rtol_atol),       # benchmarked, same tol as the rest
-}
-for _frame, _prop in PROP_FNS.items():
-    for _diag_name, (_diag, _uses_phi) in DIAG_FNS.items():
-        for _polar in (False, True):
-            _name = f'{_frame}_{_diag_name}' + ('_polar' if _polar else '')
-            BENCH_FNS[_name] = make_bench(_prop, _diag, polar=_polar,
-                                          to_jit=True, uses_phi=_uses_phi)
+for _bidx, _backend in enumerate(['qt', 'dq']):
+    for _frame, _prop in PROP_FNS.items():
+        for _diag_name, _diag in DIAG_FNS.items():
+            for _polar in (False, True):
+                _name = f'{_backend}_{_frame}_{_diag_name}' + ('_polar' if _polar else '')
+                _polar_fn = POLAR_PROJECT_FNS[_bidx] if _polar else None
+
+                BENCH_FNS[_name] = make_bench(prop_fn=_prop[_bidx], 
+                                              diag_fn=_diag[_bidx], 
+                                              post_process_fn=POST_PROCESS_FNS[_bidx], 
+                                              polar_fn=_polar_fn, 
+                                              qutip=(_backend == 'qt'),
+                                              to_jit=(_backend == 'dq'), 
+                                              uses_phi=_diag[-1])
+                if _backend == 'qt':
+                    CPU_ONLY_SOLVERS.append(_name)
+                    

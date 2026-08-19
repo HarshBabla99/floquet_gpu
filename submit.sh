@@ -10,14 +10,15 @@ set -euo pipefail
 NUM_JOBS_PER_SOLVER=5
 # DIMS=(2 4 8 16 32 64 128 256 512 1024 2048 4096 8192)
 DIMS=(5 10 20 40 80 160 320)
-# (frame) x (diagonalizer) x (polar projection), as built by the bench_solvers factory,
-# plus stock QuTiP FloquetBasis at the same tolerance as everything else (rtol_atol).
-BENCH_SOLVERS=('qutip'
-               'lab_basic'    'lab_basic_polar'    'lab_cayley'    'lab_cayley_polar'
-               'ip_basic'     'ip_basic_polar'     'ip_cayley'     'ip_cayley_polar')
+# (backend) x (frame) x (diagonalizer) x (polar projection)
+BENCH_SOLVERS=('qt_lab_basic' 'qt_lab_basic_polar' 'qt_lab_cayley' 'qt_lab_cayley_polar'
+               'qt_ip_basic'  'qt_ip_basic_polar'  'qt_ip_cayley'  'qt_ip_cayley_polar' 
+               'dq_lab_basic' 'dq_lab_basic_polar' 'dq_lab_cayley' 'dq_lab_cayley_polar'
+               'dq_ip_basic'  'dq_ip_basic_polar'  'dq_ip_cayley'  'dq_ip_cayley_polar' )
 
 # QuTiP has no GPU backend; these are skipped on GPU devices (see Phase 2).
-CPU_ONLY_SOLVERS=('qutip')
+CPU_ONLY_SOLVERS=('qt_lab_basic' 'qt_lab_basic_polar' 'qt_lab_cayley' 'qt_lab_cayley_polar'
+                  'qt_ip_basic'  'qt_ip_basic_polar'  'qt_ip_cayley'  'qt_ip_cayley_polar')
 
 # Reference: stock QuTiP FloquetBasis at ref_rtol_atol (1e-12). CPU only.
 REF_SOLVER='ref'
@@ -31,9 +32,9 @@ REF_DIR='out/cpu'
 DEVICE_NAMES=(     'cpu'      'gpu_b200'     )
 DEVICE_PARTITIONS=('day'      'gpu_b200'     )
 DEVICE_GPU_FLAGS=( ''         '--gpus=b200:1')
-DEVICE_BENCH_TIME=('02:00:00' '00:30:00')
+DEVICE_BENCH_TIME=('03:00:00' '01:00:00')
 
-REF_TIME='08:00:00'
+REF_TIME='04:00:00'
 BENCH_MEM_PER_CPU='10G'
 MAIL_USER='harsh.babla@yale.edu'
 WORK_DIR="$(pwd)"
