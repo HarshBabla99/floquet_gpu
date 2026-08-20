@@ -7,8 +7,10 @@ dq.set_precision('double')
 dq.set_progress_meter(False)
 
 rtol_atol = 1e-8
-dq_method = dq.method.Tsit5(rtol=rtol_atol, atol=rtol_atol)
+max_steps = 100_000
+dq_method = dq.method.Tsit5(rtol=rtol_atol, atol=rtol_atol, max_steps=max_steps)
 qt_method = 'tsit5'
+qt_options = {'rtol': rtol_atol, 'atol': rtol_atol, 'method': qt_method, 'nsteps': max_steps}
 
 options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
 
@@ -22,7 +24,7 @@ def qt_floquet(H, omega_d, tol=None):
     """Reference solver: QuTiP's FloquetBasis, integrated at `tol` (default ref_rtol_atol)."""
     tol = ref_rtol_atol if tol is None else tol
     T = 2.0 * np.pi / omega_d
-    fbasis = qt.FloquetBasis(H, T, options={'rtol': tol, 'atol': tol,
+    fbasis = qt.FloquetBasis(H, T, options={'rtol': tol, 'atol': tol, 'nsteps': max_steps,
                                             'method': qt_method})
     f_modes_t = fbasis.mode(0.0, data=True).to_array()
     return fbasis.e_quasi, f_modes_t, fbasis.U(T).full()
@@ -40,7 +42,7 @@ def qt_lab_propagator(H0, H1, A, omega_d):
     """
     H = qt.QobjEvo([H0, [A * H1, lambda t: np.cos(omega_d * t)]])
     T = 2.0 * np.pi / omega_d
-    U = qt.propagator(H, T, options={'rtol': rtol_atol, 'atol': rtol_atol, 'method': qt_method})
+    U = qt.propagator(H, T, options=qt_options)
     return U.full()
 
 def qt_ip_propagator(H0, H1, A, omega_d):
@@ -69,8 +71,7 @@ def qt_ip_propagator(H0, H1, A, omega_d):
         )
 
     # interaction-picture propagator W(T), in the H0 eigenbasis
-    U = qt.propagator(qt.QobjEvo(H), T,
-                      options={'rtol': rtol_atol, 'atol': rtol_atol, 'method': qt_method})
+    U = qt.propagator(qt.QobjEvo(H), T, options=qt_options)
 
     # undo the interaction picture, then rotate back to the lab basis
     U_tilde = U.full() * np.exp(-1j * evals * T)[:, None]
