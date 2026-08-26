@@ -12,11 +12,14 @@ dependencies = [
     "jax[cuda13]",
     "jaxlib==0.9.2",
     "jaxtyping==0.3.9",
+    "cuquantum-cu13",
+    "cuquantum-python-cu13",
     "jupyter==1.1.1",
     "lineax==0.1.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.4",
     "qutip==5.2.3",
+    "qutip-cuquantum==0.2.0",
     "scipy>=1.17.1",
     "scqubits>=4.1.0",
     "tqdm>=4.67.3",
@@ -26,3 +29,6 @@ dependencies = [
 dev = [
     "ipykernel>=7.2.0",
 ]
+
+[tool.uv]
+build-constraint-dependencies = ["qutip==5.2.3"]
