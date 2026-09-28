@@ -25,6 +25,9 @@ dependencies = [
     "tqdm>=4.67.3",
 ]
 
+[tool.uv.sources]
+floquet = { path = "floquet" }
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
