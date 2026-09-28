@@ -29,10 +29,10 @@ REF_DIR='out/cpu'
 # DEVICE_NAMES=(     'cpu'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 # DEVICE_PARTITIONS=('day'   'gpu_h200'        'gpu_rtx6000'                       'gpu_b200'     )
 # DEVICE_GPU_FLAGS=( ''      '--gpus=h200:1'   '--gpus=rtx_pro_6000_blackwell:1'   '--gpus=b200:1')
-DEVICE_NAMES=(     'cpu'      'gpu_b200'     )
-DEVICE_PARTITIONS=('day'      'gpu_b200'     )
-DEVICE_GPU_FLAGS=( ''         '--gpus=b200:1')
-DEVICE_BENCH_TIME=('03:00:00' '01:00:00')
+DEVICE_NAMES=(     'gpu_rtx6000'                      'gpu_h100'       'gpu_h200'     )
+DEVICE_PARTITIONS=('gpu_rtx6000'                      'gpu_h100'       'gpu_h200'     )
+DEVICE_GPU_FLAGS=( '--gpus=rtx_pro_6000_blackwell:1'  '--gpus=h100:1'  '--gpus=h200:1')
+DEVICE_BENCH_TIME=('01:00:00'                         '01:00:00'       '01:00:00')
 
 REF_TIME='04:00:00'
 BENCH_MEM_PER_CPU='10G'
