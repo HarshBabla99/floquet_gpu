@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .utils.file_io import Serializable
+import dynamiqs as dq
 
 
 class Options(Serializable):
@@ -10,9 +11,11 @@ class Options(Serializable):
         floquet_sampling_time_fraction: float = 0.0,
         fit_cutoff: int = 4,
         overlap_cutoff: float = 0.8,
-        nsteps: int = 30_000,
+        max_steps: int = 30_000,
         num_cpus: int = 1,
         save_floquet_modes: bool = False,
+        atol = 1e-8,
+        rtol = 1e-8,
     ):
         if fit_range_fraction <= 0 or fit_range_fraction > 1:
             raise ValueError(
@@ -28,6 +31,14 @@ class Options(Serializable):
                 f"Must have 0.7 <= overlap_cutoff <= 1 but got {overlap_cutoff}"
             )
         self.overlap_cutoff = overlap_cutoff
-        self.nsteps = nsteps
         self.num_cpus = num_cpus
         self.save_floquet_modes = save_floquet_modes
+        
+        self.max_steps = max_steps
+        self.atol = atol
+        self.rtol = rtol
+
+        self.dq_method = dq.method.Tsit5(atol=atol, rtol=rtol, max_steps=max_steps)
+        self.dq_options = dq.Options(save_propagators=True, progress_meter=False, t0=0)
+        self.cayley_phi = 0
+        

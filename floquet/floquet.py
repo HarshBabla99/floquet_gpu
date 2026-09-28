@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 import numpy as np
-import qutip as qt
+
 from scipy.optimize import linear_sum_assignment
 
 from .displaced_state import DisplacedState, DisplacedStateFit
@@ -11,6 +11,7 @@ from .model import Model
 from .options import Options
 from .utils.file_io import Serializable
 from .utils.parallel import parallel_map
+from .compute_floquet import compute_floquet
 
 
 class FloquetAnalysis(Serializable):
@@ -72,84 +73,14 @@ class FloquetAnalysis(Serializable):
         self.state_indices = state_indices
         self.options = options
         self.init_data_to_save = init_data_to_save
-        self.hilbert_dim = model.H0.shape[0]
+        self.hilbert_dim = model.hilbert_dim
 
     def __str__(self) -> str:
         return "Running floquet simulation with parameters: \n" + super().__str__()
 
-    def run_one_floquet(
-        self, omega_d: float, amp: float
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Run one instance of the problem for a pair of drive frequency and amp.
-
-        Parameters:
-            omega_d: Drive frequency.
-            amp: Drive amplitude.
-
-        Returns:
-            Floquet modes. Shape: `(hilbert_dim, hilbert_dim)`, where the first index
-                labels the mode and the second the basis vector components.
-            Quasienergies. Shape: `(hilbert_dim,)`.
-
-        """
-
-        # time for a single period
-        T = 2.0 * np.pi / omega_d
-
-        # diagonalize the drift Hamiltonian
-        # NOTE: In our case H0 is diagonal!!
-        # If not: 
-        # evals, evecs = np.linalg.eigh(H0.full())
-        # H1_tilde = evecs.conj().T @ H1.full() @ evecs
-        evals = np.diag(self.model.H0.full())
-        H1_tilde = self.model.H1.full()
-
-        # modulated Hamiltonian in the rotating frame
-        def H(t):
-            # diag(p) @ M @ diag(p)^dag == p[:, None] * M * conj(p)[None, :], 
-            # i.e. O(N^2) rather than O(N^3)
-            p = np.exp(1j * evals * t)
-            return qt.Qobj(
-                amp * np.cos(omega_d * t) * p[:, None] * H1_tilde * p.conj()[None, :]
-            )
-
-        # interaction-picture propagator W(T), in the H0 eigenbasis
-        U = qt.propagator(qt.QobjEvo(H), T, options={"nsteps": self.options.nsteps})
-
-        # undo the interaction picture, then rotate back to the lab basis
-        U_tilde = U.full() * np.exp(-1j * evals * T)[:, None]
-
-        # if H0 isn't diag: propagator = evecs @ U_tilde @ evecs.conj().T
-        propagator = U_tilde
-
-        # diagonalize the propagator
-        # NOTE: must not rebind `evals`; the closure H(t) above captures it by
-        # reference and is reused for the intermediate-time propagator below.
-        prop_evals, prop_evecs = np.linalg.eig(np.array(propagator))
-
-        # quasienergies, folded into the first Brillouin zone (-pi/T, pi/T]
-        f_energies = -np.angle(prop_evals) / T
-        f_energies = np.mod(f_energies + 0.5 * omega_d, omega_d) - 0.5 * omega_d
-
-        # remove the global phase on the maximum-magnitude component of each mode
-        pivot = np.argmax(np.abs(prop_evecs), axis=0)
-        pv = np.take_along_axis(prop_evecs, pivot[None, :], axis=0)[0]
-        phase = pv / np.abs(pv)
-        prop_evecs = prop_evecs * np.conj(phase)[None, :]
-
-        # sort by quasienergy
-        perm = np.argsort(f_energies)
-
-        # intermediate time evolve
-        sampling_time = self.options.floquet_sampling_time_fraction * T % T
-        if sampling_time > 0:
-            U = qt.propagator(qt.QobjEvo(H), sampling_time, options={"nsteps": self.options.nsteps})
-            U_tilde = U.full() * np.exp(-1j * evals * sampling_time)[:, None]
-            f_modes_t = (U_tilde @ prop_evecs) * np.exp(1j * f_energies * sampling_time)[None, :]
-        else:
-            f_modes_t = prop_evecs
-
-        return f_modes_t.T[perm], f_energies[perm]
+    def run_one_floquet(self, omega_d: float, amp: float) -> tuple[np.ndarray, np.ndarray]:
+        modes, qenergies = compute_floquet(self.model, omega_d, amp, options=self.options)
+        return np.array(modes), np.array(qenergies)
 
     def identify_floquet_modes(
         self,
@@ -181,7 +112,7 @@ class FloquetAnalysis(Serializable):
         """
         # Return overlaps and floquet modes
         ovlps_and_modes = np.zeros(
-            (len(self.state_indices), 1 + self.hilbert_dim), dtype=complex
+            (len(self.state_indices), 1 + self.model.hilbert_dim), dtype=complex
         )
 
         # Compute the overlap of the floquet modes with the displaced states specified
@@ -265,7 +196,7 @@ class FloquetAnalysis(Serializable):
         We thus use the fit from the previous range of drive amplitudes as our new bare
         state.
         """
-        print(self)
+        # print(self)
         start_time = time.time()
 
         # initialize all arrays that will contain our data
