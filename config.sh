@@ -7,9 +7,9 @@
 omega_p=1
 
 # Zeta range (ZETA_NUM values, inclusive of both ends)
-ZETA_START=0.38 # 0.05
+ZETA_START=0.40 # 0.05
 ZETA_END=0.42
-ZETA_NUM=3
+ZETA_NUM=1
 
 # Coupling to readout resonator
 # G=0.215      # GHz

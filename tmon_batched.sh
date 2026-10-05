@@ -4,18 +4,18 @@
 #SBATCH --gpus=b200:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
-#SBATCH --time=03:00:00
-#SBATCH --array=0-77%15
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=20G
+#SBATCH --time=01:30:00
+#SBATCH --array=0-25
 #SBATCH -o out/%A-output-%a.txt -e out/%A-errors-%a.txt
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=harsh.babla@yale.edu
 #
 # One array task per (zeta, ng) pair: submit with `sbatch tmon_batched.sh`.
 # The array must have ZETA_NUM * NG_NUM tasks (0-77 for 3 x 26). 
-# A 1000 x 201 batch at TMON_DIM=30 needs ~62 GB of GPU memory, so use
-# >= 80 GB GPUs (b200 / h200 / rtx_pro_6000_blackwell).
+# Each solver call covers 1000 frequencies x 4 amplitudes (~1-2 GB of GPU memory);
+# the 1000 x 201 batch arrays on the GPU add ~3 GB. Expect ~15-20 min per task.
 
 set -euo pipefail
 source config.sh

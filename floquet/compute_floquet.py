@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import partial
 
 import dynamiqs as dq
+import jax
 import jax.numpy as jnp
 from jax import Array, jit, vmap
 
@@ -89,16 +90,24 @@ def compute_floquet(
 
     return f_modes_t.T[perm], f_energies[perm]
 
-@partial(jit, static_argnames=("options",))
-def compute_floquet_grid(model: Model, *, options: Options) -> tuple[Array, Array]:
+@partial(jit, static_argnames=("options", "amp_chunk"))
+def compute_floquet_grid(
+    model: Model, *, options: Options, amp_chunk: int = 4
+) -> tuple[Array, Array]:
     """Floquet modes and quasienergies for every (omega_d, amp) in the model.
 
-    Returns shapes (n_omega, n_amp, dim, dim) and (n_omega, n_amp, dim).
-    """
-    # TODO: below, we convert to jax arrays. But maybe we can JAXify all the data
+    Vectorized over all drive frequencies, but amplitudes are iterated over
+    sequentially of chunk size amp_chunk.
 
-    one = lambda w, a: compute_floquet(model, w, a, options=options)
-    over_amp = vmap(one, in_axes=(None, 0))  # amplitudes at fixed omega_d
-    return vmap(over_amp, in_axes=(0, 1))(   # drive_amplitudes is (amp, omega)
-        jnp.asarray(model.omega_d_values), jnp.asarray(model.drive_amplitudes)
+    Returns:
+        floquet_modes: shape (n_omega, n_amp, dim, dim)
+        quasienergies: shape (n_omega, n_amp, dim)
+    """
+    omega_d = jnp.asarray(model.omega_d_values)
+    over_freq = vmap(lambda w, a: compute_floquet(model, w, a, options=options))
+    modes, energies = jax.lax.map(
+        lambda a_row: over_freq(omega_d, a_row),
+        jnp.asarray(model.drive_amplitudes),
+        batch_size=amp_chunk,
     )
+    return jnp.swapaxes(modes, 0, 1), jnp.swapaxes(energies, 0, 1)
