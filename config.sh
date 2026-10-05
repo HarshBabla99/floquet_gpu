@@ -6,14 +6,10 @@
 # Tmon parameters
 omega_p=1
 
-# Zeta range (swept, one set of jobs + one merge per zeta value)
+# Zeta range (ZETA_NUM values, inclusive of both ends)
 ZETA_START=0.38 # 0.05
 ZETA_END=0.42
-ZETA_STEP=0.02
-
-# Seconds to wait between submitting one zeta's batch of jobs and the next, to stay
-# under the cluster's max-submitted-jobs limit. Set to 0 to submit everything at once.
-ZETA_SUBMIT_DELAY=100
+ZETA_NUM=3
 
 # Coupling to readout resonator
 # G=0.215      # GHz
@@ -24,11 +20,13 @@ CUTOFF=41       # basis states for initial diagonalization
 TMON_DIM=30     # Transmon eigenstates to keep for Floquet sim
 # RESONATOR_DIM=5 # Readout resonator dimension
 
-# Drive frequency range
+# Drive frequency range: NUM_FREQS uniform points (spacing 8.8 / 22000 = 0.0004),
+# solved in consecutive batches of FREQS_PER_BATCH; the last batch also takes the
+# remainder (21 x 1000 + 1 x 1001).
 FREQ_RATIO_START=1.2
 FREQ_RATIO_END=10.0
-FREQ_RATIO_STEP=0.2
-NUM_FREQS_PER_BATCH=501
+NUM_FREQS=22001
+FREQS_PER_BATCH=1000
 
 # Drive amplitude range
 XI_SQ_START=0.0
@@ -36,7 +34,7 @@ XI_SQ_END=3.0 # XI^2 = 2 => CHI_AC = EC = 0.2 GHz (we want chi * nbar = 20e-3 * 
 XI_SQ_NUM=201
 
 # Gate charge range
-# Note: Number of gate charges should match SLURM_ARRAY_TASK_COUNT
+# Note: the array in tmon_batched.sh must have ZETA_NUM * NG_NUM tasks
 NG_START=0.0
 NG_END=0.5
 NG_NUM=26
@@ -45,9 +43,11 @@ NG_NUM=26
 FIT_RANGE_FRACTION=0.5
 FIT_CUTOFF=6
 OVLP_CUTOFF=0.8
-FLOQUET_SAMPLING_TIME_FRACTION=0.0
-NSTEPS=30000
-SAVE_FLOQUET_MODES=1
+MAX_STEPS=30000
+KEEP_FLOQUET_MODES=0
+
+# Results (project NFS space; written only at the end of each task)
+SAVE_ROOT=/home/hkb7/project_pi_sp979/hkb7/dust/tmon_gpu
 
 
 # ===========================
