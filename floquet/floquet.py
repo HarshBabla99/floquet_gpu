@@ -11,7 +11,7 @@ from .model import Model
 from .options import Options
 from .utils.file_io import Serializable
 from .utils.parallel import parallel_map
-from .compute_floquet import compute_floquet
+from .compute_floquet import compute_floquet_grid
 
 
 class FloquetAnalysis(Serializable):
@@ -77,10 +77,6 @@ class FloquetAnalysis(Serializable):
 
     def __str__(self) -> str:
         return "Running floquet simulation with parameters: \n" + super().__str__()
-
-    def run_one_floquet(self, omega_d: float, amp: float) -> tuple[np.ndarray, np.ndarray]:
-        modes, qenergies = compute_floquet(self.model, omega_d, amp, options=self.options)
-        return np.array(modes), np.array(qenergies)
 
     def identify_floquet_modes(
         self,
@@ -243,6 +239,11 @@ class FloquetAnalysis(Serializable):
             dtype=complex,
         )
 
+        # Solve the Floquet problem for all the drive parameters
+        modes, energies = compute_floquet_grid(self.model, options=self.options)
+        self._f_modes, self._f_energies = np.asarray(modes), np.asarray(energies)
+
+        # Now iterate through the amplitude ranges
         num_fit_ranges = int(np.ceil(1 / self.options.fit_range_fraction))
         num_amp_pts_per_range = int(
             np.floor(len(self.model.drive_amplitudes) / num_fit_ranges)
@@ -370,8 +371,10 @@ class FloquetAnalysis(Serializable):
             prev_f_modes_for_omega_d = prev_f_modes_arr[omega_d_idx]
             # for evaluating the displaced state (might be dangerous to evaluate
             # outside of fitted window)
-            for amp_idx, amp in enumerate(amps_for_omega_d):
-                f_modes, f_energies = self.run_one_floquet(omega_d, amp)
+            for amp_idx, _ in enumerate(amps_for_omega_d):
+                f_modes = self._f_modes[omega_d_idx, amp_idxs[0] + amp_idx]
+                f_energies = self._f_energies[omega_d_idx, amp_idxs[0] + amp_idx]
+
                 ovlps_and_modes = self.identify_floquet_modes(
                     f_modes,
                     displaced_state,

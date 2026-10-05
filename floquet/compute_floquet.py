@@ -4,7 +4,7 @@ from functools import partial
 
 import dynamiqs as dq
 import jax.numpy as jnp
-from jax import Array, jit
+from jax import Array, jit, vmap
 
 from .model import Model
 from .options import Options
@@ -88,3 +88,17 @@ def compute_floquet(
     f_modes_t = prop_evecs
 
     return f_modes_t.T[perm], f_energies[perm]
+
+@partial(jit, static_argnames=("options",))
+def compute_floquet_grid(model: Model, *, options: Options) -> tuple[Array, Array]:
+    """Floquet modes and quasienergies for every (omega_d, amp) in the model.
+
+    Returns shapes (n_omega, n_amp, dim, dim) and (n_omega, n_amp, dim).
+    """
+    # TODO: below, we convert to jax arrays. But maybe we can JAXify all the data
+
+    one = lambda w, a: compute_floquet(model, w, a, options=options)
+    over_amp = vmap(one, in_axes=(None, 0))  # amplitudes at fixed omega_d
+    return vmap(over_amp, in_axes=(0, 1))(   # drive_amplitudes is (amp, omega)
+        jnp.asarray(model.omega_d_values), jnp.asarray(model.drive_amplitudes)
+    )

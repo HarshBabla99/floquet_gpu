@@ -39,8 +39,8 @@ class Model(eqx.Module):
         self,
         H0: dq.QArray | qt.Qobj | np.ndarray | jnp.Array | list,
         H1: dq.QArray | qt.Qobj | np.ndarray | jnp.Array | list,
-        omega_d_values: np.ndarray,
-        drive_amplitudes: np.ndarray,
+        omega_d_values: np.ndarray | list,
+        drive_amplitudes: np.ndarray | list,
     ):
         if not isinstance(H0, dq.QArray):
             H0 = dq.asqarray(H0)
