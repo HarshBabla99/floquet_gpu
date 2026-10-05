@@ -154,33 +154,34 @@ class FloquetAnalysis(Serializable):
         """Perform Blais branch analysis.
 
         Gorgeous in its simplicity. Simply calculate overlaps of new floquet modes with
-        those from the previous amplitude step, and order the modes accordingly.
+        those from the previous amplitude step, compute mean excitation, and order the 
+        modes accordingly.
+
+        Based on Blais arXiv:2402.06615, specifically mean excitation number is Eq. (12)
+        but without the integral over floquet modes in one period.
         """
-        ordered_modes = np.empty_like(floquet_modes)
+        num_omega_d, num_amps = floquet_modes.shape[:2]
+        avg_excitation = np.empty((num_omega_d, num_amps, self.hilbert_dim))
         ordered_quasienergies = np.empty_like(quasienergies)
-        num_amps = floquet_modes.shape[1]
 
         # since we're sorting all modes, begin with the bare states
         prev_modes = np.broadcast_to(
-            self.model.bare_state_array(), 
-            (floquet_modes.shape[0], self.hilbert_dim, self.hilbert_dim)
+            self.model.bare_state_array(), (num_omega_d, self.hilbert_dim, self.hilbert_dim)
         )
         for amp_idx in range(num_amps):
-            ovlps = np.abs(np.einsum("wih,wkh->wik", prev_modes.conj(), floquet_modes[:, amp_idx]))
+            modes = floquet_modes[:, amp_idx, :, :]
+            ovlps = np.abs(np.einsum("wih,wkh->wik", prev_modes.conj(), modes))
             perm = self._linear_sum_assignment(ovlps)
-            prev_modes = np.take_along_axis(floquet_modes[:, amp_idx], perm[..., None], axis=1)
-            ordered_modes[:, amp_idx] = prev_modes
+            prev_modes = np.take_along_axis(modes, perm[..., None], axis=1)
+            avg_excitation[:, amp_idx] = self._calculate_mean_excitation(prev_modes)
             ordered_quasienergies[:, amp_idx] = np.take_along_axis(
                 quasienergies[:, amp_idx], perm, axis=1
             )
 
-        return ordered_modes, ordered_quasienergies
+        return avg_excitation, ordered_quasienergies
 
     def _calculate_mean_excitation(self, f_modes_ordered: np.ndarray) -> np.ndarray:
         """Mean excitation number of ordered floquet modes.
-
-        Based on Blais arXiv:2402.06615, specifically Eq. (12) but going without the
-        integral over floquet modes in one period.
         """
         bare = self.model.bare_state_array()
         overlaps_sq = np.abs(np.einsum("ih,...kh->...ik", bare, f_modes_ordered)) ** 2
@@ -230,8 +231,7 @@ class FloquetAnalysis(Serializable):
         f_modes, f_energies = np.asarray(f_modes), np.asarray(f_energies)
 
         # Blais branch analysis. Independent of the fit ranges, so done in one pass.
-        blais_ordered_modes, quasienergies = self.branch_analysis(f_modes, f_energies)
-        avg_excitation = self._calculate_mean_excitation(blais_ordered_modes)
+        avg_excitation, quasienergies = self.branch_analysis(f_modes, f_energies)
 
         # Displaced state analysis. Iterated over amplitude ranges.
         displaced_state = DisplacedStateFit(
