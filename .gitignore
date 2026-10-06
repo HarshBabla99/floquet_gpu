@@ -41,3 +41,6 @@ site/
 .claude/
 *.project
 .entropy/
+
+# Output logs
+out*
