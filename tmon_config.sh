@@ -7,25 +7,28 @@
 omega_p=1
 
 # Zeta range (ZETA_NUM values, inclusive of both ends)
-ZETA_START=0.40 # 0.05
-ZETA_END=0.42
+ZETA_START=0.46 # 0.05
+ZETA_END=0.48
 ZETA_NUM=1
 
 # Hilbert space sizes
 CUTOFF=41       # basis states for initial diagonalization
 TMON_DIM=30     # Transmon eigenstates to keep for Floquet sim
+STATE_INDICES="0,1" # Transmon eigenstates to perform the displaced state fitting to
 
-# Drive frequency range: NUM_FREQS uniform points (spacing 8.8 / 22000 = 0.0004),
-# solved in consecutive batches of FREQS_PER_BATCH; the last batch also takes the
-# remainder (21 x 1000 + 1 x 1001).
+# Drive frequency range: NUM_FREQS uniform points 
+# solved in consecutive batches of FREQS_PER_BATCH.
 FREQ_RATIO_START=1.2
 FREQ_RATIO_END=10.0
 NUM_FREQS=22001
-FREQS_PER_BATCH=1000
+FREQS_PER_BATCH=500
 
 # Drive amplitude range
+# anharmonicity = EC = omega_p*zeta/8 = zeta/8
+# chi_ac = alpha * xi^2/2 = zeta * xi^2 / 16 (in this case alpha/4)
+# nbar in resonator = chi_ac/chi
 XI_SQ_START=0.0
-XI_SQ_END=3.0 # XI^2 = 2 => CHI_AC = EC = 0.2 GHz (we want chi * nbar = 20e-3 * 15 = 0.3 GHz)
+XI_SQ_END=4.0
 XI_SQ_NUM=201
 
 # Gate charge range

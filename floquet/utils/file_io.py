@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import importlib
 import inspect
 import pathlib
 import re
+from collections.abc import Generator
 
 import h5py
 import numpy as np
@@ -85,11 +87,24 @@ class Serializable:
                 h5py file
             data_dict: Dictionary containing various raw data to save
         """
-        if data_dict is None:
-            data_dict = {}
-        with h5py.File(filepath, "w") as f:
-            for key, val in data_dict.items():
-                f.create_dataset(key, data=val, track_order=True)
+        with self.open_for_writing(filepath, data_dict):
+            pass
+
+    @contextmanager
+    def open_for_writing(
+        self,
+        filepath: str | pathlib.Path,
+        data_dict: dict | None = None,
+        empty_datasets: dict | None = None,
+        attrs: dict | None = None,
+    ) -> Generator[h5py.File]:
+        """Like write_to_file, but keeps the file open so data can be added to it.
+
+        See open_h5_for_writing for the parameters. The class itself is written to the
+        group "_init_attrs" as in write_to_file, so the file can be read back with
+        read_from_file.
+        """
+        with open_h5_for_writing(filepath, data_dict, empty_datasets, attrs) as f:
 
             def _write(_key: str, _val: h5py.Dataset, _group: h5py.Group) -> None:
                 if isinstance(_val, dict):
@@ -115,6 +130,42 @@ class Serializable:
             )
             for key, val in initdata.items():
                 _write(key, val, param_grp)
+            yield f
+
+
+@contextmanager
+def open_h5_for_writing(
+    filepath: str | pathlib.Path,
+    data_dict: dict | None = None,
+    empty_datasets: dict | None = None,
+    attrs: dict | None = None,
+) -> Generator[h5py.File]:
+    """Create an h5 file and keep it open so that data can be streamed into it.
+
+    Parameters:
+        filepath: Path to the file to create. Overwritten if it exists
+        data_dict: Dictionary containing various raw data to save
+        empty_datasets: Datasets to allocate on disk without filling, as a dictionary
+            mapping each name to keyword arguments for h5py.Group.create_dataset (e.g.
+            shape, dtype, chunks). Fill them a slice at a time with f[name][sl] = ...,
+            so the full arrays never have to be held in memory
+        attrs: Metadata to save as attributes of the file
+
+    Yields:
+        f: The open file, closed again on leaving the with block
+    """
+    with h5py.File(filepath, "w") as f:
+        f.attrs.update(attrs or {})
+        write_datasets(f, data_dict or {})
+        for key, kwargs in (empty_datasets or {}).items():
+            f.create_dataset(key, track_order=True, **kwargs)
+        yield f
+
+
+def write_datasets(group: h5py.Group, data_dict: dict) -> None:
+    """Write each array in data_dict to a dataset of the same name in group."""
+    for key, val in data_dict.items():
+        group.create_dataset(key, data=val, track_order=True)
 
 
 def read_from_file(filepath: str | pathlib.Path) -> tuple[Serializable, dict]:

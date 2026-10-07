@@ -4,10 +4,10 @@
 #SBATCH --gpus=b200:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=20G
-#SBATCH --time=01:30:00
-#SBATCH --array=0-25
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=10G
+#SBATCH --time=00:40:00
+#SBATCH --array=0-51
 #SBATCH -o out/%A-output-%a.txt -e out/%A-errors-%a.txt
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=harsh.babla@yale.edu
@@ -48,10 +48,11 @@ uv run python tmon_batched.py \
   --omega_p="$omega_p" \
   --ncut="$CUTOFF" \
   --hilbert_dim="$TMON_DIM" \
+  --state_indices="$STATE_INDICES" \
   --freq_ratio_start="$FREQ_RATIO_START" \
   --freq_ratio_end="$FREQ_RATIO_END" \
-  --num_freqs="$NUM_FREQS" \
-  --freqs_per_batch="$FREQS_PER_BATCH" \
+  --freq_ratio_num="$NUM_FREQS" \
+  --freq_ratio_num_per_batch="$FREQS_PER_BATCH" \
   --xi_sq_start="$XI_SQ_START" \
   --xi_sq_end="$XI_SQ_END" \
   --xi_sq_num="$XI_SQ_NUM" \
