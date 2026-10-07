@@ -18,7 +18,7 @@
 # the 1000 x 201 batch arrays on the GPU add ~3 GB. Expect ~15-20 min per task.
 
 set -euo pipefail
-source config.sh
+source tmon_config.sh
 
 # Sweep values, and this task's position in the (zeta, ng) grid
 mapfile -t ZETA_VALS < <(linspace "$ZETA_START" "$ZETA_END" "$ZETA_NUM")

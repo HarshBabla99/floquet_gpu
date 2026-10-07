@@ -1,17 +1,3 @@
-"""Batched GPU Floquet analysis of a transmon, for one (zeta, ng) pair.
-
-The drive-frequency axis is one uniform grid, cut into consecutive, non-overlapping
-batches of equal size (the last batch also takes any remainder). Each batch is solved
-and post-processed by FloquetAnalysis; batches of equal shape share one compiled JAX
-function, so the solve compiles at most twice. Per-batch results are written to an HDF5 file in a
-node-local work directory; the Floquet modes go to a separate scratch file. After the
-last batch, the displaced-state fit is redone across the full frequency range using
-the Floquet modes from all batches, the modes are discarded (unless asked to keep
-them), and the result file is left in the work directory for the SLURM script to copy.
-
-Launched by tmon_batched.sh, which derives zeta and ng from the array index.
-"""
-
 import os
 
 # Must be set before jax is imported.
@@ -47,7 +33,7 @@ PER_POINT_OUTPUTS = {
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(description="Transmon Floquet simulation")
     # physics
     p.add_argument("--zeta", type=float, required=True)
     p.add_argument("--ng", type=float, required=True)
