@@ -11,14 +11,9 @@ ZETA_START=0.40 # 0.05
 ZETA_END=0.42
 ZETA_NUM=1
 
-# Coupling to readout resonator
-# G=0.215      # GHz
-# OMEGA_R=7.05 # GHz
-
 # Hilbert space sizes
 CUTOFF=41       # basis states for initial diagonalization
 TMON_DIM=30     # Transmon eigenstates to keep for Floquet sim
-# RESONATOR_DIM=5 # Readout resonator dimension
 
 # Drive frequency range: NUM_FREQS uniform points (spacing 8.8 / 22000 = 0.0004),
 # solved in consecutive batches of FREQS_PER_BATCH; the last batch also takes the
