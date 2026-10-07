@@ -99,8 +99,6 @@ def transmon_operators(args: argparse.Namespace) -> tuple[qt.Qobj, qt.Qobj, dict
 def main() -> None:
     args = parse_args()
     t_start = time.time()
-    dq.set_device("gpu")
-    dq.set_precision("double")
 
     ratios, batches = frequency_grid(args)
     num_batches = len(batches)
