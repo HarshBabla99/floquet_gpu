@@ -5,8 +5,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=40G
-#SBATCH --time=01:30:00
+#SBATCH --mem=32G
+#SBATCH --time=01:00:00
 #SBATCH --array=0-204
 #SBATCH -o out/%A-output-%a.txt -e out/%A-errors-%a.txt
 #SBATCH --mail-type=FAIL
@@ -44,10 +44,11 @@ uv run python ist_batched.py \
   --omega_0="$omega_0" \
   --cutoff="$CUTOFF" \
   --hilbert_dim="$HILBERT_DIM" \
+  --state_indices="$STATE_INDICES" \
   --freq_ratio_start="$FREQ_RATIO_START" \
   --freq_ratio_end="$FREQ_RATIO_END" \
-  --num_freqs="$NUM_FREQS" \
-  --freqs_per_batch="$FREQS_PER_BATCH" \
+  --freq_ratio_num="$NUM_FREQS" \
+  --freq_ratio_num_per_batch="$FREQS_PER_BATCH" \
   --xi_sq_start="$XI_SQ_START" \
   --xi_sq_end="$XI_SQ_END" \
   --xi_sq_num="$XI_SQ_NUM" \

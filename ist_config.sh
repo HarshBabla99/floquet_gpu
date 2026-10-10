@@ -14,26 +14,26 @@ ZETA_END=0.50
 ZETA_NUM=41
 
 # ALPHA_TILDE range (ALPHA_TILDE_NUM values, inclusive of both ends)
-ALPHA_TILDE_START=0.028
-ALPHA_TILDE_END=0.032
+ALPHA_TILDE_START=0.010
+ALPHA_TILDE_END=0.026
 ALPHA_TILDE_NUM=5
 
 # Hilbert space sizes
 CUTOFF=200      # basis states for initial diagonalization
-HILBERT_DIM=40      # IST eigenstates to keep for Floquet sim
+HILBERT_DIM=30  # IST eigenstates to keep for Floquet sim
+STATE_INDICES="0,1" # IST eigenstates to perform the displaced state fitting to
 
-# Drive frequency range NUM_FREQS uniform points (spacing 8.8 / 22000 = 0.0004),
-# solved in consecutive batches of FREQS_PER_BATCH; the last batch also takes the
-# remainder (21 x 1000 + 1 x 1001).
+# Drive frequency range: NUM_FREQS uniform points 
+# solved in consecutive batches of FREQS_PER_BATCH.
 FREQ_RATIO_START=1.4
 FREQ_RATIO_END=10.2
 NUM_FREQS=22001
-FREQS_PER_BATCH=1000
+FREQS_PER_BATCH=500
 
 # Drive amplitude range
 XI_SQ_START=0.0
 XI_SQ_END=5.0
-XI_SQ_NUM=501
+XI_SQ_NUM=251
 
 # Flux bias
 FLUX_BIAS=0.5
@@ -46,7 +46,7 @@ MAX_STEPS=30000
 KEEP_FLOQUET_MODES=0
 
 # Results (project NFS space; written only at the end of each task)
-SAVE_ROOT=/home/hkb7/project_pi_sp979/hkb7/dust/ist_gpu
+SAVE_ROOT=/home/hkb7/project_pi_sp979/hkb7/dust/ist_gpu2
 
 
 # ===========================
