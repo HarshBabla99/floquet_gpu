@@ -1,3 +1,4 @@
+import equinox as eqx
 import numpy as np
 import qutip as qt
 import scqubits as scq
@@ -5,41 +6,16 @@ from floquet.model import Model
 from scipy.optimize import root
 
 ####################################################################################################
-# Helper
-def Qobj_to_np(obj : qt.Qobj | list[qt.Qobj] | np.ndarray, isket: bool = False):
-    """Convert a (list of) Qobjs to a numpy array. """
-    
-    if isinstance(obj, np.ndarray):
-        if obj.dtype == object:
-            obj = obj.tolist()
-        else:
-            return obj
-    
-    # A single object
-    if isinstance(obj, qt.Qobj):
-        if isket:
-            return np.array(obj.unit().tidyup().full(squeeze=True), dtype=complex)
-        else:
-            return np.array(obj.tidyup().full(squeeze=True), dtype=complex)
-    
-    # A list (of lists) of objects
-    elif isinstance(obj, list):
-        return np.array([Qobj_to_np(sub_obj, isket) for sub_obj in obj])
-        
-    else:
-        raise ValueError(f"obj can only be an instance of qutip.Qobj or a list of Qobj.")
-
-####################################################################################################
 # Transmon
 def tmon(EJ, EC, ng, ncut, transmon_dim, **_):
     """
-    Returns: 
+    Returns:
         H0 = transmon Hamiltonian
         n = transmon charge operator
         eye = transmon identity operator
     """
-    tmon = scq.Transmon(EJ = EJ, EC = EC, 
-                        ng = ng, ncut = ncut, 
+    tmon = scq.Transmon(EJ = EJ, EC = EC,
+                        ng = ng, ncut = ncut,
                         truncated_dim = transmon_dim)
 
     # Get operators in the eigenbasis
@@ -53,7 +29,7 @@ def tmon(EJ, EC, ng, ncut, transmon_dim, **_):
 # Kerr oscillator
 def kerr_cat(omega_r, K, resonator_dim, **_):
     """
-    Returns: 
+    Returns:
         H0 = resonator Hamiltonian
         H1 = resonator drive operator (squeezing)
         a = resonator annihilation operator
@@ -91,22 +67,72 @@ def coupled_system(H0_t, n_t, eye_t, H0_r, H1_r, a_r, adag_r, eye_r, g):
 
 ####################################################################################################
 class BifurcationROModel(Model):
-    r"""Specify the model, including the Hamiltonian, drive strengths and frequencies.
+    """Floquet model of a transmon coupled to a Kerr-cat resonator, for a range of drive
+    frequencies. Built by BifurcationROSystem.model().
 
-    Can be subclassed to e.g. override the hamiltonian() method for a different (but
-    still periodic!) Hamiltonian.
+    The operators are in the product state basis |i_t, j_r>, with basis index
+    i * resonator_dim + j. Model diagonalizes the frequency-dependent H0 and labels the
+    dressed states by these product states, so the state indices are product-state
+    indices.
+    """
 
-    The Hamiltonian is specified as 
+    # (transmon_dim, resonator_dim)
+    subsystem_dims: tuple = eqx.field(static=True)
+
+    def __init__(self, H0, H1, omega_d_values, drive_amplitudes, subsystem_dims):
+        super().__init__(H0, H1, omega_d_values, drive_amplitudes)
+        self.subsystem_dims = tuple(subsystem_dims)
+
+    def mean_excitation(self, floquet_modes: np.ndarray) -> np.ndarray:
+        r"""Mean excitation number of each subsystem, and of the composite system.
+
+        For a state $|\psi> = \sum_{ij} c_{ij} |i_t, j_r>$, the transmon's mean
+        excitation is $\sum_i i * \sum_j |c_{ij}|^2$, which is just a tensor contraction,
+        i.e. the excitation of the reduced density matrix without building it.
+
+        Parameters:
+            floquet_modes: In the dressed basis. Shape: (num_omega_ds, num_modes, hilbert_dim).
+
+        Returns:
+            Mean excitation of the transmon, resonator, and composite system (the
+            dressed level, as in Model.mean_excitation).
+                Shape: (num_omega_ds, len(subsystem_dims) + 1, num_modes).
+        """
+        # Floquet modes as kets in the product basis: psi = evecs @ c
+        evecs = np.asarray(self.H0_evecs)
+        states = floquet_modes @ np.swapaxes(evecs, -1, -2)
+
+        # Split the product-basis axis into one axis per subsystem
+        probs = np.abs(states.reshape(*states.shape[:-1], *self.subsystem_dims)) ** 2
+        subsys_axes = tuple(range(states.ndim - 1, probs.ndim))
+        probs /= probs.sum(axis=subsys_axes, keepdims=True)
+
+        mean_excitation = []
+        for subsys_axis, subsys_dim in zip(subsys_axes, self.subsystem_dims):
+            # Marginalize over every subsystem except this one
+            traced_out = tuple(axis for axis in subsys_axes if axis != subsys_axis)
+            mean_excitation.append(probs.sum(axis=traced_out) @ np.arange(subsys_dim))
+
+        mean_excitation.append(super().mean_excitation(floquet_modes))
+        return np.stack(mean_excitation, axis=-2)
+
+
+class BifurcationROSystem:
+    r"""Specify the system, including the Hamiltonian, drive strengths and frequencies.
+
+    The Hamiltonian is specified as
     $$
     H = H0a + omega_r*H0b + amp*H1*cos(omega_d*t)
     $$
-    Therefore: 
+    Therefore:
     - H0a should have units of $2 \pi$ GHz
     - H0b and H1 should be unitless
     - omega_r, omega_d, and amp should have units of $2 \pi$ GHz
 
     Importantly:
-    All operators (H0a, H0b, H1) should be in the product state basis! 
+    All operators (H0a, H0b, H1) should be in the product state basis!
+
+    The Floquet simulation itself runs on the models returned by model().
 
     Parameters:
         see params.py
@@ -132,7 +158,7 @@ class BifurcationROModel(Model):
                 assert isinstance(params[k], (int, float)), f"Parameter '{k}' must be a number"
 
         # Store parameters
-        # Note: omega_d = 2 * omega_r always, because we optimize the params s.t. 
+        # Note: omega_d = 2 * omega_r always, because we optimize the params s.t.
         # dressed resonator freq is omega_r
         self.omega_r_values = params['omega_r_values']
         self.omega_d_values = 2. * np.array(self.omega_r_values) + params['delta_const']
@@ -154,7 +180,7 @@ class BifurcationROModel(Model):
 
         # Cache the transmon operators. They depend on neither the resonator
         # frequency nor the drive, so rebuilding them (a scqubits diagonalization)
-        # inside hamiltonian() would repeat the same work once per drive amplitude.
+        # for every resonator frequency would repeat the same work.
         self.tmon_ops = tmon(**self.params)
 
         # Optimize for the system parameters
@@ -164,40 +190,26 @@ class BifurcationROModel(Model):
             self.g_optimized
         ) = self.optimize_system_parameters()
 
-        # Cache the coupled operators, one static Hamiltonian per resonator
-        # frequency. The drive operator eye_t (x) (adag^2 + a^2) does not depend on
-        # (omega_r, K, g), so every iteration assigns the same H1.
-        self.H0_static = []
-        for omega_r_idx, _ in enumerate(self.omega_r_values):
-            H0, self.H1_drive = coupled_system(
-                *self.tmon_ops,
-                *kerr_cat(
-                    self.omega_r_optimized[omega_r_idx],
-                    self.kerr_optimized[omega_r_idx],
-                    self.params['resonator_dim'],
-                ),
-                self.g_optimized[omega_r_idx],
-            )
-            self.H0_static.append(H0)
+        # The drive operator eye_t (x) (adag^2 + a^2) does not depend on
+        # (omega_r, K, g), so it is the same for every resonator frequency.
+        _, self.H1_drive = coupled_system(
+            *self.tmon_ops,
+            *kerr_cat(self.omega_r_optimized[0], self.kerr_optimized[0], self.params['resonator_dim']),
+            self.g_optimized[0],
+        )
 
-        # Diagonalize the undriven Hamiltonian for all resonator frequencies
+        # Diagonalize the undriven Hamiltonian for all resonator frequencies.
+        # The eigenvectors are not stored (num_omega_r x hilbert_dim^2 is too large); the
+        # models re-diagonalize the static Hamiltonians of their batch of frequencies.
         self.undriven_evals = np.zeros((
-                                            len(self.omega_r_values), 
+                                            len(self.omega_r_values),
                                             self.hilbert_dim[-1]
                                        ), dtype=float)
-                                        
-        self.undriven_evecs = np.zeros((
-                                            len(self.omega_r_values), 
-                                            self.hilbert_dim[-1], 
-                                            self.hilbert_dim[-1]
-                                       ), dtype=complex)
 
-        for omega_r_idx, _ in enumerate(self.omega_r_values):
-            evals, evecs = self.diagonalize(self.H0_static[omega_r_idx])
-            self.undriven_evals[omega_r_idx, :]   = evals
-            self.undriven_evecs[omega_r_idx, ...] = evecs
-
-        self.assignment_idxs = self.get_assignment_idxs(self.undriven_evecs)
+        self.assignment_idxs = np.zeros((
+                                            len(self.omega_r_values),
+                                            *self.hilbert_dim[:-1]
+                                        ), dtype=int)
 
         # dressed parameters: omega_q, omega_r, alpha_q, Kerr, chi
         self.dressed_parameters = np.zeros((
@@ -205,8 +217,11 @@ class BifurcationROModel(Model):
                                         ), dtype=float)
 
         for omega_r_idx, _ in enumerate(self.omega_r_values):
+            evals, evecs = self.diagonalize(self.static_hamiltonian(omega_r_idx))
+            self.undriven_evals[omega_r_idx, :] = evals
+            self.assignment_idxs[omega_r_idx] = self.get_assignment_idxs(evecs)
             self.dressed_parameters[omega_r_idx] = self.get_dressed_parameters(
-                self.undriven_evals[omega_r_idx], self.assignment_idxs[omega_r_idx]
+                evals, self.assignment_idxs[omega_r_idx]
             )
 
 
@@ -263,7 +278,7 @@ class BifurcationROModel(Model):
 
         for idx, target_omega_r in enumerate(self.omega_r_values):
             if idx % 20 == 0:
-                print(f"Optimizing for freq_r (idx = {idx}): {target_omega_r/(2*np.pi):.3f} GHz")
+                print(f"Optimizing for freq_r (idx = {idx}): {target_omega_r/(2*np.pi):.3f} GHz", flush=True)
 
             _residuals = lambda x : residuals(x,
                                               target_omega_r,
@@ -274,7 +289,7 @@ class BifurcationROModel(Model):
             # try guessing with the previous solution first
             opt_result = root(_residuals, _guess_params)
 
-            # If that fails, retry from a nudged guess. 
+            # If that fails, retry from a nudged guess.
             if not opt_result.success:
                 nudged_guess = [*_guess_params[:-1], 0.95 * _guess_params[-1]]
                 opt_result = root(_residuals, nudged_guess)
@@ -289,10 +304,35 @@ class BifurcationROModel(Model):
             # set the guess params to the solution for the next iteration
             _guess_params = opt_result.x
 
-            # also store the solution                
+            # also store the solution
             omega_r_optimized[idx], kerr_optimized[idx], g_optimized[idx] = opt_result.x
 
         return omega_r_optimized, kerr_optimized, g_optimized
+
+    def static_hamiltonian(self, omega_r_idx: int) -> qt.Qobj:
+        """The undriven coupled Hamiltonian (product state basis) at one resonator frequency."""
+        H0, _ = coupled_system(
+            *self.tmon_ops,
+            *kerr_cat(
+                self.omega_r_optimized[omega_r_idx],
+                self.kerr_optimized[omega_r_idx],
+                self.params['resonator_dim'],
+            ),
+            self.g_optimized[omega_r_idx],
+        )
+        return H0
+
+    def model(self, freq_slice: slice = slice(None)) -> BifurcationROModel:
+        """Floquet model for a range of the drive frequencies (one batch)."""
+        omega_r_idxs = range(len(self.omega_r_values))[freq_slice]
+        H0 = np.stack([self.static_hamiltonian(idx).full() for idx in omega_r_idxs])
+        return BifurcationROModel(
+            H0,
+            self.H1_drive.full(),
+            omega_d_values=self.omega_d_values[freq_slice],
+            drive_amplitudes=self.drive_amplitudes[:, freq_slice],
+            subsystem_dims=self.hilbert_dim[:-1],
+        )
 
     def diagonalize(self, H0: qt.Qobj) -> tuple[np.ndarray, np.ndarray]:
         # Diagonalize the static Hamiltonian
@@ -300,23 +340,23 @@ class BifurcationROModel(Model):
         evals, evecs = np.linalg.eigh(H0.full())
         evecs = evecs.T
 
-        # eigh results in a random global phase for each eigvec. 
+        # eigh results in a random global phase for each eigvec.
         # it jumps around for adjacent omega_r, which is bad for the displaced-state fit.
         dominant = np.argmax(np.abs(evecs), axis=-1)
         phases = np.angle(evecs[np.arange(len(dominant)), dominant])
         evecs *= np.exp(-1j * phases)[:, None]
 
         return evals, evecs
-    
+
     def get_dressed_parameters(self, evals : np.ndarray, assgn_idxs : np.ndarray
                           ) -> tuple[float, float, float]:
         """Diagonalize a static coupled Hamiltonian and extract the dressed
-        resonator frequency, Kerr, and chi. 
+        resonator frequency, Kerr, and chi.
         """
         # Get the dressed parameters
         omega_q = evals[assgn_idxs[1,0]] - evals[assgn_idxs[0,0]]
         omega_r = evals[assgn_idxs[0,1]] - evals[assgn_idxs[0,0]]
-        
+
         alpha_q = -(
               (evals[assgn_idxs[2,0]] - evals[assgn_idxs[1,0]])
             - (evals[assgn_idxs[1,0]] - evals[assgn_idxs[0,0]])
@@ -343,134 +383,10 @@ class BifurcationROModel(Model):
         states, and assigning each product state to the bare state with which it has
         the largest overlap.
         """
-        # Since we're working in the product state basis, the list of product states is just 
-        # the identity reshaped. 
+        # Since we're working in the product state basis, the list of product states is just
+        # the identity reshaped.
         # So, overlap of evec[k] with $|i_t, j_r>$ is just |evecs[k, i*resonator_dim + j]|
-        # Simply split the basis axis into (i, j). 
+        # Simply split the basis axis into (i, j).
         ovlps = np.moveaxis(np.abs(evecs), -1, -2)
         ovlps = ovlps.reshape(*evecs.shape[:-2], *self.hilbert_dim[:-1], -1)
         return np.argmax(ovlps, axis=-1).astype(int)
-
-    def hamiltonian(self,
-                    omega_d_idx : int,
-                    amp_idx : int | None,
-                   ) -> qt.QobjEvo | qt.Qobj:
-        """Return the Hamiltonian (in the product state basis) we actually simulate.
-
-        The operators are built once in __init__; this only applies the scalars.
-        """
-        # If no amp_idx provided, get the undriven Hamiltonian
-        if amp_idx is None:
-            return self.H0_static[omega_d_idx]
-
-        # Else, get the complete time-dependent driven Hamiltonian
-        omega_d = self.omega_d_values[omega_d_idx]
-        amp = self.drive_amplitudes[amp_idx, omega_d_idx]
-        return qt.QobjEvo([
-            self.H0_static[omega_d_idx],
-            [amp * self.H1_drive, lambda t: np.cos(omega_d * t)],
-        ])
-
-    def bare_state_array(self) -> np.ndarray:
-        """Return array of true bare states.
-
-        Used to specify initial bare states and to compute average excitation
-        number for the Blais branch analysis.
-        """
-        return self.undriven_evecs
-
-    ################
-    # Saving
-    ################
-    # don't save the qutip operators.
-    SKIP_ATTRS = ('tmon_ops', 'H0_static', 'H1_drive')
-
-    # Saved as their own .npy rather than pickled into params_<mode>.npy
-    # Need to stream them as memap.
-    STREAMED_ATTRS = ('undriven_evecs',)
-
-    def data_to_save(self) -> dict:
-        """All the data the model in the model, except SKIP_ATTRS and STREAMED_ATTRS.
-        Written to params_<mode>.npy, by FloquetAnalysis. 
-        """
-        skip = (*self.SKIP_ATTRS, *self.STREAMED_ATTRS)
-        data = {key: val for key, val in vars(self).items() if key not in skip}
-        nested_params = data.pop('params')
-        return data | nested_params
-
-    def arrays_to_save(self, omega_r_idx: int = 0) -> dict:
-        """The STREAMED_ATTRS for one drive frequency, as plain arrays.
-        Freq axis is dropped (because it's restored by merge.py).
-        """
-        return {
-            name: getattr(self, name)[omega_r_idx] for name in self.STREAMED_ATTRS
-        }
-
-    def ptrace(self, states: np.ndarray, keep_dim: int | list[int]):
-        """Take the partial trace of an array of quantum states. 
-        Inspired by qutip's ptrace.
-
-        Parameters:
-            states: a numpy array of states. 
-                Assumes the states are kets of length self.hilbert_dim[-1]. 
-                Shape: (..., self.hilbert_dim[-1]).
-            keep_dim: The index of the subsystem(s) to keep after the partial trace.
-        """
-        if isinstance(keep_dim, int):
-            keep_dim = [keep_dim]
-
-        dims = [self.hilbert_dim[:-1], [1]*len(self.hilbert_dim[:-1])]
-        ptraced_states_qt = [
-            qt.Qobj(psi, dims=dims).unit().tidyup().ptrace(keep_dim)
-            for psi in states
-        ]
-        return Qobj_to_np(ptraced_states_qt)
-
-    def subsystem_mean_excitation(self, states: np.ndarray) -> np.ndarray:
-        """Mean excitation number of each subsystem, for an array of kets.
-        If ptrace forms a subsystem density matrix rho, then this function computes
-        $\sum_n n \rho_{n,n}$, but without building the reduced density matrices.
-
-        How? Well, for a state $|\psi> = \sum_{ij} c_{ij} |i_t, j_r>$, the transmon's mean
-        excitation is $\sum_i i * \sum_j |c_{ij}|^2$, which is just a tensor contraction. 
-
-        Parameters:
-            states: Kets in the product basis. Shape: (num_states, hilbert_dim[-1]).
-
-        Returns:
-            Mean excitation of each subsystem.
-                Shape: (len(self.hilbert_dim) - 1, num_states).
-        """
-        # Split the product-basis axis into one axis per subsystem
-        probs = np.abs(states.reshape(len(states), *self.hilbert_dim[:-1])) ** 2
-        probs /= probs.sum(axis=tuple(range(1, probs.ndim)), keepdims=True)
-
-        mean_excitation = np.zeros((len(self.hilbert_dim) - 1, len(states)))
-        for subsys_idx, subsys_dim in enumerate(self.hilbert_dim[:-1]):
-            # Marginalize over every subsystem except this one
-            traced_out = tuple(
-                axis for axis in range(1, probs.ndim) if axis != subsys_idx + 1
-            )
-            mean_excitation[subsys_idx] = probs.sum(axis=traced_out) @ np.arange(subsys_dim)
-
-        return mean_excitation
-
-    ################
-    # Indexing methods
-    ################
-    def omega_r_to_idx(self, omega_r: float) -> np.ndarray[int]:
-        """Return index corresponding to omega_r value."""
-        return np.argmin(np.abs(self.omega_r_values - omega_r))
-
-    def omega_d_to_idx(self, omega_d: float) -> np.ndarray[int]:
-        """Return index corresponding to omega_d value."""
-        return np.argmin(np.abs(self.omega_d_values - omega_d))
-
-    def amp_to_idx(self, amp: float, omega_d: float) -> np.ndarray[int]:
-        """Return index corresponding to amplitude value.
-
-        Because the drive amplitude can depend on the drive frequency, we also must pass
-        the drive frequency here.
-        """
-        omega_d_idx = self.omega_d_to_idx(omega_d)
-        return np.argmin(np.abs(self.drive_amplitudes[:, omega_d_idx] - amp))

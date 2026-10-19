@@ -17,6 +17,7 @@ def compute_floquet(
     model: Model,
     omega_d: float,
     amp: float,
+    freq_idx: int = 0,
     *,
     options: Options,
     eigh_impl: str | None = None,
@@ -27,6 +28,8 @@ def compute_floquet(
         model: Model (an equinox Module, so its arrays are traced by jit).
         omega_d: Drive frequency.
         amp: Drive amplitude.
+        freq_idx: Index of omega_d in model.omega_d_values, for models whose H0
+            depends on the drive frequency.
         options: Options. Static: hashed by jit, so changing it triggers a recompile.
         eigh_impl: jax.lax.linalg.EighImplementation method. Either "QR", "JACOBI", or None.
             None defaults to JAX's default (i.e. JACOBI on GPU for smaller matrices, QR on CPU and 
@@ -47,14 +50,17 @@ def compute_floquet(
     ts = jnp.array([T])
 
     # interaction-picture propagator W(T), in the H0 eigenbasis
-    seprop_result = dq.sepropagator(model.hamiltonian(omega_d, amp), ts, 
+    seprop_result = dq.sepropagator(model.hamiltonian(omega_d, amp, freq_idx), ts, 
                                     method=options.dq_method, 
                                     options=options.dq_options)
 
     # undo the interaction picture, then rotate back to the lab basis
-    U_tilde = seprop_result.final_propagator.elmul(jnp.exp(-1j * model.H0_evals * T)[:, None])
+    U_tilde = seprop_result.final_propagator.elmul(
+        jnp.exp(-1j * model.H0_evals_at(freq_idx) * T)[:, None]
+    )
     
-    # if H0 isn't diag: propagator = evecs @ U_tilde @ evecs.dag()
+    # stay in the H0 eigenbasis, where the bare states are the basis states
+    # (to go to the original basis: propagator = evecs @ U_tilde @ evecs.dag())
     U = U_tilde
 
     #### 
@@ -116,11 +122,14 @@ def _compute_floquet_grid(model: Model, *, options: Options) -> tuple[Array, Arr
         quasienergies: shape (n_omega, n_amp, dim)
     """
     omega_d = jnp.asarray(model.omega_d_values)
+    freq_idxs = jnp.arange(len(omega_d))
     over_freq = vmap(
-        lambda w, a: compute_floquet(model, w, a, options=options, eigh_impl=options.default_eigh)
+        lambda w, i, a: compute_floquet(
+            model, w, a, i, options=options, eigh_impl=options.default_eigh
+        )
     )
     modes, energies = lax_map(
-        lambda a_row: over_freq(omega_d, a_row),
+        lambda a_row: over_freq(omega_d, freq_idxs, a_row),
         jnp.asarray(model.drive_amplitudes),
         batch_size=options.amp_chunk,
     )
@@ -153,7 +162,7 @@ def compute_floquet_grid(model: Model, *, options: Options) -> tuple[Array, Arra
     # usually we only have a few bad points, so the loop should be fast. 
     fixed = [
         compute_floquet(
-            model, omega_d[i], amps[j, i], options=options, eigh_impl=options.retry_eigh
+            model, omega_d[i], amps[j, i], i, options=options, eigh_impl=options.retry_eigh
         )
         for i, j in bad_idxs
     ]

@@ -161,7 +161,7 @@ class FloquetAnalysis(Serializable):
         but without the integral over floquet modes in one period.
         """
         num_omega_d, num_amps = floquet_modes.shape[:2]
-        avg_excitation = np.empty((num_omega_d, num_amps, self.hilbert_dim))
+        avg_excitation = []
         ordered_quasienergies = np.empty_like(quasienergies)
 
         # since we're sorting all modes, begin with the bare states
@@ -173,23 +173,14 @@ class FloquetAnalysis(Serializable):
             ovlps = np.abs(np.einsum("wih,wkh->wik", prev_modes.conj(), modes))
             perm = self._linear_sum_assignment(ovlps)
             prev_modes = np.take_along_axis(modes, perm[..., None], axis=1)
-            avg_excitation[:, amp_idx] = self._calculate_mean_excitation(prev_modes)
+            # mean excitation is model specific, e.g. per subsystem for multi-mode systems
+            avg_excitation.append(self.model.mean_excitation(prev_modes))
             ordered_quasienergies[:, amp_idx] = np.take_along_axis(
                 quasienergies[:, amp_idx], perm, axis=1
             )
 
-        return avg_excitation, ordered_quasienergies
-
-    def _calculate_mean_excitation(self, f_modes_ordered: np.ndarray) -> np.ndarray:
-        """Mean excitation number of ordered floquet modes.
-        """
-        bare = self.model.bare_state_array()
-        overlaps_sq = np.abs(np.einsum("ih,...kh->...ik", bare, f_modes_ordered)) ** 2
-
-        # sum over bare excitations weighted by excitation number
-        return np.real(
-            np.einsum("...ik,i->...k", overlaps_sq, np.arange(self.hilbert_dim))
-        )
+        # shape (num_omega_d, num_amps, ...), where ... is set by model.mean_excitation
+        return np.stack(avg_excitation, axis=1), ordered_quasienergies
 
     def run(self, filepath: str | None = None) -> dict:
         """Perform floquet analysis over range of amplitudes and drive frequencies.
@@ -229,9 +220,11 @@ class FloquetAnalysis(Serializable):
         # Solve the Floquet problem for all the drive parameters
         f_modes, f_energies = compute_floquet_grid(self.model, options=self.options)
         f_modes, f_energies = np.asarray(f_modes), np.asarray(f_energies)
+        solve_time = time.time()
 
         # Blais branch analysis. Independent of the fit ranges, so done in one pass.
         avg_excitation, quasienergies = self.branch_analysis(f_modes, f_energies)
+        branch_time = time.time()
 
         # Displaced state analysis. Iterated over amplitude ranges.
         displaced_state = DisplacedStateFit(
@@ -320,6 +313,12 @@ class FloquetAnalysis(Serializable):
         if self.options.save_floquet_modes:
             data_dict["floquet_modes"] = floquet_modes
         print(f"finished in {(time.time() - start_time) / 60} minutes")
+        print(
+            f"\t solve (incl. transfer to host) {solve_time - start_time:.1f} s, "
+            f"branch analysis {branch_time - solve_time:.1f} s, "
+            f"displaced state analysis {time.time() - branch_time:.1f} s",
+            flush=True,
+        )
         if filepath is not None:
             self.write_to_file(filepath, data_dict)
         return data_dict
