@@ -62,6 +62,8 @@ def parse_args() -> argparse.Namespace:
                    help="cutoff for the overlap between the Floquet modes and the bare states, to specify the modes included within the fit")
     p.add_argument("--max_steps", type=int, default=30_000,
                    help="max steps for the sesolve")
+    p.add_argument("--fit_freq_chunk", type=int, default=1000,
+                   help="number of drive frequencies per chunk for the online refit over the full range")
     p.add_argument("--keep_floquet_modes", type=int, default=0,
                    help="flag to save the Floquet modes in the final file")
     
@@ -149,6 +151,7 @@ def main() -> None:
         overlap_cutoff=args.overlap_cutoff,
         max_steps=args.max_steps,
         save_floquet_modes=True,
+        fit_freq_chunk=args.fit_freq_chunk,
     )
 
     # Creating working directory, path to store final results and to store the temp ones
@@ -243,20 +246,26 @@ def main() -> None:
             hilbert_dim=hilbert_dim, model=full_model,
             state_indices=args.state_indices, options=options,
         )
-        floquet_modes = modes_file["floquet_modes"][()]
-        ovlps_for_mask = scratch_file["displaced_state_overlaps"][()]
+        # pass the h5py datasets, so the online fit only reads one chunk at a time
+        floquet_modes = modes_file["floquet_modes"]
+        ovlps_for_mask = scratch_file["displaced_state_overlaps"]
         full_fit = displaced_state.displaced_states_fit(ovlps_for_mask, floquet_modes)
-        del ovlps_for_mask
-        
-        # compute overlaps with displaced states and save
+
+        # compute overlaps with displaced states, one chunk of frequencies at a time
+        displaced_state_overlaps = np.empty((n_freq, n_amp, n_states))
+        for start in range(0, n_freq, args.fit_freq_chunk):
+            stop = min(start + args.fit_freq_chunk, n_freq)
+            displaced_state_overlaps[start:stop] = (
+                displaced_state.overlap_with_displaced_states(
+                    full_fit, floquet_modes, omega_d_idxs=(start, stop)
+                )
+            )
+
         write_datasets(result_file, {
             "fit_data": full_fit,
             "fit_ok": displaced_state.fit_ok,
-            "displaced_state_overlaps": displaced_state.overlap_with_displaced_states(
-                full_fit, floquet_modes
-            ),
+            "displaced_state_overlaps": displaced_state_overlaps,
         })
-        del floquet_modes
 
         print(f"\nfull-range refit done in {time.time() - t_fit:.1f} s", flush=True)
 

@@ -7,8 +7,8 @@
 omega_p=1
 
 # Zeta range (ZETA_NUM values, inclusive of both ends)
-ZETA_START=0.46 # 0.05
-ZETA_END=0.48
+ZETA_START=0.28
+ZETA_END=0.30
 ZETA_NUM=1
 
 # Hilbert space sizes
@@ -45,7 +45,7 @@ MAX_STEPS=30000
 KEEP_FLOQUET_MODES=0
 
 # Results (project NFS space; written only at the end of each task)
-SAVE_ROOT=/home/hkb7/project_pi_sp979/hkb7/dust/tmon_gpu
+SAVE_ROOT=/home/hkb7/project_pi_sp979/hkb7/dust/tmon_gpu2
 
 
 # ===========================

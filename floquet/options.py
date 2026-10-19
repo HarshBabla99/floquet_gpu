@@ -19,6 +19,7 @@ class Options(Serializable):
         atol = 1e-8,
         rtol = 1e-8,
         amp_chunk: int = 4,
+        fit_freq_chunk: int | None = None,
         default_eigh: str | None = None,
         retry_eigh: str | None = "JACOBI",
     ):
@@ -61,6 +62,12 @@ class Options(Serializable):
         self.cayley_phi = 0
 
         self.amp_chunk = amp_chunk
+
+        # Number of drive frequencies per chunk for the online displaced state fit.
+        # None fits all points at once.
+        if fit_freq_chunk is not None and fit_freq_chunk < 1:
+            raise ValueError(f"Must have fit_freq_chunk > 0 but got {fit_freq_chunk}")
+        self.fit_freq_chunk = fit_freq_chunk
 
 
         # On GPU, JAX's default Hermitian eigensolver for matrices larger than 32 x 32

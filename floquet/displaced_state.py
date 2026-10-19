@@ -239,12 +239,18 @@ class DisplacedStateFit(DisplacedState):
         the corresponding value in ovlp_with_bare_states is below the threshold
         specified in options.
 
+        If options.fit_freq_chunk is smaller than the number of drive frequencies, the
+        fit is performed online, reading fit_freq_chunk drive frequencies at a time
+        (see _displaced_states_fit_online). Otherwise all points are fitted at once.
+
         Parameters:
             ovlp_with_bare_states: Overlap with bare states. Already trimmed to the
                 relevant range of frequencies and amplitudes.
                 Shape: `(num_omega_d_in_range, num_amps_in_range, num_states)`.
             floquet_modes: Floquet modes.
                 Shape: `(num_omega_ds, num_amps, num_states, hilbert_dim)`.
+                Both arrays can also be h5py Datasets. The online fit then only
+                holds one chunk in memory at a time.
             omega_d_idxs: Indices specifying the lower and upper bound of the drive
                 frequency range. Selects all `self.model.omega_d_values` by default.
             amp_idxs: Indices specifying the lower and upper bound of the amplitude
@@ -254,15 +260,24 @@ class DisplacedStateFit(DisplacedState):
             Optimized fit coefficients.
                 Shape: `(num_states, hilbert_dim, num_fit_terms)`.
         """
-        # Only fit states that we think haven't run into a transition,
-        # and those within the specified bounds
-        # mask.shape = (num_omega_ds, num_amps, num_state_indices).
-        mask = ovlp_with_bare_states > self.options.overlap_cutoff
-
         # Required poly_terms
         poly_terms = self.poly_terms[
             omega_d_idxs[0] : omega_d_idxs[1], amp_idxs[0] : amp_idxs[1], :
         ]
+
+        freq_chunk = self.options.fit_freq_chunk
+        if freq_chunk is not None and freq_chunk < floquet_modes.shape[0]:
+            return self._displaced_states_fit_online(
+                ovlp_with_bare_states, floquet_modes, poly_terms, freq_chunk
+            )
+
+        # read h5py Datasets into memory for the fit over all points
+        floquet_modes = np.asarray(floquet_modes)
+
+        # Only fit states that we think haven't run into a transition,
+        # and those within the specified bounds
+        # mask.shape = (num_omega_ds, num_amps, num_state_indices).
+        mask = np.asarray(ovlp_with_bare_states) > self.options.overlap_cutoff
 
         coeffs = np.zeros(
             (len(self.state_indices), self.hilbert_dim, self.exponent_pairs.shape[-1]),
@@ -283,6 +298,66 @@ class DisplacedStateFit(DisplacedState):
         # TODO: return mask, other fit data
         return coeffs
 
+    def _displaced_states_fit_online(
+        self,
+        ovlp_with_bare_states: np.ndarray,
+        floquet_modes: np.ndarray,
+        poly_terms: np.ndarray,
+        freq_chunk: int,
+    ) -> np.ndarray:
+        """Fit chunks of freq_chunk drive frequencies one after the other.
+
+        For each state, the least-squares problem poly_terms @ coeffs.T =
+        states_to_fit is accumulated with a running QR factorization. After each
+        chunk, the triangular factor R and Q^T @ states_to_fit summarize all points
+        seen so far, since |poly_terms @ c - states| = |R @ c - Q^T @ states| up to a
+        constant. Stacking them on the next chunk's points and refactorizing therefore
+        gives the same coefficients as fitting all points at once, while only one
+        chunk is held in memory.
+        """
+        num_states = len(self.state_indices)
+        num_fit_terms = self.exponent_pairs.shape[-1]
+
+        # running QR factors, transformed states and point counts for each state
+        r_factors = [np.zeros((0, num_fit_terms)) for _ in range(num_states)]
+        q_states = [np.zeros((0, self.hilbert_dim), dtype=complex) for _ in range(num_states)]
+        num_points, num_outliers, num_masked = np.zeros((3, num_states), dtype=int)
+
+        num_omega_ds = floquet_modes.shape[0]
+        for start in range(0, num_omega_ds, freq_chunk):
+            chunk = slice(start, min(start + freq_chunk, num_omega_ds))
+            mask = np.asarray(ovlp_with_bare_states[chunk]) > self.options.overlap_cutoff
+            modes = np.asarray(floquet_modes[chunk])
+            for arr_idx, state_idx in enumerate(self.state_indices):
+                chunk_poly_terms, chunk_states, too_big = self._points_to_fit(
+                    target_states=modes[..., arr_idx, :],
+                    mask=mask[..., arr_idx],
+                    state_index=state_idx,
+                    poly_terms=poly_terms[chunk],
+                )
+                num_points[arr_idx] += len(chunk_states)
+                num_outliers[arr_idx] += too_big.sum()
+                num_masked[arr_idx] += too_big.size
+                if len(chunk_states) == 0:
+                    continue
+                q, r_factors[arr_idx] = np.linalg.qr(
+                    np.vstack([r_factors[arr_idx], chunk_poly_terms])
+                )
+                q_states[arr_idx] = q.T @ np.vstack([q_states[arr_idx], chunk_states])
+
+        coeffs = np.zeros((num_states, self.hilbert_dim, num_fit_terms), dtype=complex)
+        self.fit_ok = np.ones(num_states, dtype=bool)
+        for arr_idx, state_idx in enumerate(self.state_indices):
+            coeffs[arr_idx], self.fit_ok[arr_idx] = self._solve_fit(
+                r_factors[arr_idx],
+                q_states[arr_idx],
+                state_index=state_idx,
+                num_points=num_points[arr_idx],
+                num_outliers=num_outliers[arr_idx],
+                num_masked=num_masked[arr_idx],
+            )
+        return coeffs
+
     def _fit_for_state_idx(
         self,
         target_states: np.ndarray,
@@ -290,6 +365,32 @@ class DisplacedStateFit(DisplacedState):
         state_index: int,
         poly_terms: np.ndarray,
     ) -> tuple[np.ndarray, bool]:
+        masked_poly_terms, masked_states_to_fit, too_big = self._points_to_fit(
+            target_states, mask, state_index, poly_terms
+        )
+        return self._solve_fit(
+            masked_poly_terms,
+            masked_states_to_fit,
+            state_index=state_index,
+            num_points=len(masked_states_to_fit),
+            num_outliers=too_big.sum(),
+            num_masked=too_big.size,
+        )
+
+    def _points_to_fit(
+        self,
+        target_states: np.ndarray,
+        mask: np.ndarray,
+        state_index: int,
+        poly_terms: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Polynomial terms and deviations from the bare state of the points to fit.
+
+        Returns:
+            masked_poly_terms: Shape `(num_points, num_fit_terms)`.
+            masked_states_to_fit: Shape `(num_points, hilbert_dim)`.
+            too_big: Which masked points were discarded as outliers.
+        """
         num_fit_terms = self.exponent_pairs.shape[-1]
         mask_flat = mask.ravel()
 
@@ -313,28 +414,47 @@ class DisplacedStateFit(DisplacedState):
         # ignore any values that are too large
         too_big = np.any(np.abs(masked_states_to_fit) > 1, axis=-1)
         if too_big.any():
-            warnings.warn(
-                f"Discarding {int(too_big.sum())} of {too_big.size} outlier points "
-                f"from the fit for state {state_index}.", stacklevel=3,
-            )
             masked_poly_terms   = masked_poly_terms[~too_big]
             masked_states_to_fit = masked_states_to_fit[~too_big]
 
+        return masked_poly_terms, masked_states_to_fit, too_big
+
+    def _solve_fit(
+        self,
+        poly_terms: np.ndarray,
+        states_to_fit: np.ndarray,
+        state_index: int,
+        num_points: int,
+        num_outliers: int,
+        num_masked: int,
+    ) -> tuple[np.ndarray, bool]:
+        """Least-squares fit poly_terms @ coefficients.T = states_to_fit.
+
+        For the online fit, poly_terms and states_to_fit are the accumulated R and
+        Q^T @ states, while num_points counts all the points that went into them.
+        """
+        num_fit_terms = self.exponent_pairs.shape[-1]
+        if num_outliers:
+            warnings.warn(
+                f"Discarding {int(num_outliers)} of {num_masked} outlier points "
+                f"from the fit for state {state_index}.", stacklevel=4,
+            )
+
         # Warn if not enough data points to fit
-        if masked_states_to_fit.shape[0] < num_fit_terms:
+        if num_points < num_fit_terms:
             warnings.warn(
                 "Not enough data points to fit. Returning zeros for the fit",
-                stacklevel=3,
+                stacklevel=4,
             )
             return np.zeros((self.hilbert_dim, num_fit_terms), dtype=complex), False
 
-        # Simple linear fit: masked_states_to_fit = masked_poly_terms @ coefficients.T
+        # Simple linear fit: states_to_fit = poly_terms @ coefficients.T
         try:
-            popt = np.linalg.lstsq(masked_poly_terms, masked_states_to_fit)[0].T
+            popt = np.linalg.lstsq(poly_terms, states_to_fit)[0].T
             fit_ok = True
 
         except np.linalg.LinAlgError:
-            warnings.warn("Fit failed. Returning zeros for the fit", stacklevel=3)
+            warnings.warn("Fit failed. Returning zeros for the fit", stacklevel=4)
             popt = np.zeros((self.hilbert_dim, num_fit_terms), dtype=complex)
             fit_ok = False
 

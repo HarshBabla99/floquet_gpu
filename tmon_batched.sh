@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=tmon_flq_gpu
-#SBATCH --partition=gpu_b200
-#SBATCH --gpus=b200:1
+#SBATCH --partition=gpu_b200,gpu_h200,gpu_h100
+#SBATCH --gpus=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=20G
-#SBATCH --time=00:40:00
-#SBATCH --array=0-51
+#SBATCH --time=00:50:00
+#SBATCH --array=0
 #SBATCH -o out/%A-output-%a.txt -e out/%A-errors-%a.txt
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=harsh.babla@yale.edu
