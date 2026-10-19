@@ -1,11 +1,23 @@
+from __future__ import annotations
+
 from functools import wraps
+from io import BytesIO
+
+from collections.abc import Callable, Sequence
+from typing import Concatenate, ParamSpec, TypeVar, cast
+
+from IPython.display import Image
+
 
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from PIL import Image as PILImage
 
 import numpy as np
 from cycler import cycler
 import h5py
+from tqdm import tqdm
 
 ########################
 # Helper functions
@@ -80,26 +92,127 @@ def read_from_file(filepath: str):
     return load_hdf5_dict(f)
 
 ########################
+# gifit from Dynamiqs
+########################
+def gif_indices(nitems: int, nframes: int) -> np.ndarray:
+    # generate indices for GIF frames
+    if nframes < nitems:
+        return np.linspace(0, nitems - 1, nframes, dtype=int)
+    else:
+        return np.arange(nitems)
+
+
+T = TypeVar('T')
+P = ParamSpec('P')
+
+def gifit(
+    plot_function: Callable[Concatenate[T, P], None],
+) -> Callable[Concatenate[Sequence[T], P], Image]:
+    """Adapted from Dynamiqs. 
+    
+    Transform a plot function into a new function that returns an animated GIF.
+
+    This function takes a plot function that normally operates on a single input and
+    returns a new function that creates a GIF from a sequence of inputs. The new
+    function accepts two extra keyword arguments:
+
+    - **gif_duration** _(float)_ -- GIF duration in seconds.
+    - **fps** _(int)_ -- GIF frames per seconds.
+
+    The new function returns an object of type `IPython.core.display.Image`,
+    which automatically displays the GIF in Jupyter notebook environments (when the
+    `Image` object is the last expression in a cell).
+
+    ??? "Save GIF to a file"
+        The returned GIF can be saved to a file with:
+
+        ```
+        with open('/path/to/file.gif').open('wb') as f:
+            f.write(gif.data)
+        ```
+
+    Args:
+        plot_function: Plot function which must take as first positional argument the
+            input that will be sequenced over by the new function. It must create a
+            matplotlib `Figure` object and not close it.
+
+    Returns:
+        A new function with the same signature as `plot_function` which accepts a
+            sequence of inputs and returns a GIF by applying the original
+            `plot_function` to each element in the sequence.
+    """
+
+    @wraps(plot_function)
+    def wrapper(
+        items: Sequence[T], *args, gif_duration: float = 5.0, fps: int = 10, **kwargs
+    ) -> Image:
+        nframes = int(gif_duration * fps)
+        indices = gif_indices(len(items), nframes)
+
+        frames = []
+        for idx in tqdm(indices):
+            plt.close()
+            plot_function(items[idx], *args, **kwargs)  # plot frame
+            canvas = cast(FigureCanvasAgg, plt.gcf().canvas)
+            canvas.draw()  # ensure the figure is drawn
+            frame = np.array(canvas.buffer_rgba())  # capture the RGBA buffer
+            frames.append(frame)
+
+        plt.close()
+
+        # create a BytesIO object to save the GIF in memory
+        gif_buffer = BytesIO()
+        # duration per frame in ms, rescaled to account for eventual duplicate frames
+        duration = int(1000 / fps * nframes / len(indices))
+        pil_frames = [PILImage.fromarray(frame).convert('RGB') for frame in frames]
+        pil_frames[0].save(
+            gif_buffer,
+            format='GIF',
+            save_all=True,
+            append_images=pil_frames[1:],
+            duration=duration,
+            loop=0,
+        )
+
+        return Image(data=gif_buffer.getvalue(), format='gif')
+
+    return wrapper
+
+########################
 # FloquetPlot class
 ########################
 
 class FloquetPlot:
-    def __init__(self, directory, zeta_value, ng_values, use_tex=False, fontsize=12):
+    def __init__(self, directory, 
+                 sweep_param_name1, sweep_vals1,
+                 sweep_param_name2, sweep_vals2,
+                 use_tex=False, fontsize=12):
         self.directory = directory
-        self.zeta_value = zeta_value
         self.data = {} # Key: idx, Value: data
 
-        self.sweep_vals = ng_values # in this case: ng values
-        self.sweep_idxs = range(len(ng_values))
-        self.num_sweep_idxs = len(self.sweep_idxs)
+        # TODO: make this into an arbitrary number of sweep params
+        self.sweep_param_name1 = sweep_param_name1
+        self.sweep_vals1 = sweep_vals1 
+        self.sweep_idxs1 = list(range(len(sweep_vals1)))
+        self.num_sweep_idxs1 = len(self.sweep_idxs1)
 
-        # Load data from idx = 0 file 
+        self.sweep_param_name2 = sweep_param_name2
+        self.sweep_vals2 = sweep_vals2 
+        self.sweep_idxs2 = list(range(len(sweep_vals2)))
+        self.num_sweep_idxs2 = len(self.sweep_idxs2)
+
+        # Load data from idx = (0,0) file 
         # TODO: Doing this manually for now
-        filepath = f"{self.directory}/zeta_{self.zeta_value:.4f}_ng_{self.sweep_vals[0]:.4f}.h5"
+        filepath = (
+            f"{self.directory}/"                                      # master dir (ist_gpu/)
+            f"{self.sweep_param_name1}_{self.sweep_vals1[0]:.4f}/"    # sub dir (zeta_xxxx/)
+            f"{self.sweep_param_name1}_{self.sweep_vals1[0]:.4f}_"    # filename pt1 (zeta_xxxx_)
+            f"{self.sweep_param_name2}_{self.sweep_vals2[0]:.4f}.h5"  # filename pt2 (alpha_xxxx.h5)
+        )
         data_dict = read_from_file(filepath)
 
-        self.xi_sq  = data_dict['xi_sq']    # Note: is an array
-        self.omega_d = data_dict['omega_d'] # Note: is an array
+        self.xi_sq  = data_dict['drive_params']['xi_sq']  # Note: is an array
+        self.omega_d = data_dict['drive_params']['omega_d'] # Note: is an array
 
         # Params and state labels
         self.hilbert_dim = data_dict['avg_excitation'].shape[-1]
@@ -134,18 +247,26 @@ class FloquetPlot:
             plt.rc('text', usetex=True)
             plt.rc('mathtext', fontset = 'custom')
 
-    def get_data(self, idx):
-        if not isinstance(idx, (int, np.integer)) or idx >= self.num_sweep_idxs:
-            raise ValueError(f"Invalid idx: {idx}")
+    def read_data(self, idx1, idx2):
+        if not isinstance(idx1, (int, np.integer)) or idx1 >= self.num_sweep_idxs1:
+            raise ValueError(f"Invalid idx1: {idx1}")
+        if not isinstance(idx2, (int, np.integer)) or idx2 >= self.num_sweep_idxs2:
+            raise ValueError(f"Invalid idx2: {idx2}")
 
-        if idx in self.data.keys():
-            return self.data[idx]
+        if (idx1, idx2) in self.data.keys():
+            return self.data[(idx1, idx2)]
         
-        filepath = f"{self.directory}/zeta_{self.zeta_value:.4f}_ng_{self.sweep_vals[idx]:.4f}.h5"
+        filepath = (
+            f"{self.directory}/"                                    
+            f"{self.sweep_param_name1}_{self.sweep_vals1[idx1]:.4f}/"  
+            f"{self.sweep_param_name1}_{self.sweep_vals1[idx1]:.4f}_"  
+            f"{self.sweep_param_name2}_{self.sweep_vals2[idx2]:.4f}.h5"
+        )
         data_dict = read_from_file(filepath)
 
-        xi_sq  = data_dict['xi_sq']    # Note: is an array
-        omega_d = data_dict['omega_d'] # Note: is an array
+        xi_sq  = data_dict['drive_params']['xi_sq']  # Note: is an array
+        omega_d = data_dict['drive_params']['omega_d'] # Note: is an array
+        
         data = {
             'displaced_state_overlaps' : data_dict["displaced_state_overlaps"],
             'quasienergies'  : data_dict["quasienergies"],
@@ -154,15 +275,53 @@ class FloquetPlot:
         
         # Validate data
         assert np.allclose(xi_sq,self.xi_sq), \
-                f"xi_sq does not match at idx={idx}"
+                (
+                    f"xi_sq does not match at "
+                    f"{self.sweep_param_name1}_{self.sweep_vals1[idx1]:.4f}_"  
+                    f"{self.sweep_param_name2}_{self.sweep_vals2[idx2]:.4f}"
+                )
         assert np.allclose(omega_d,self.omega_d), \
-                f"omega_d does not match at idx={idx}"
+                (
+                    f"omega_d does not match at "
+                    f"{self.sweep_param_name1}_{self.sweep_vals1[idx1]:.4f}_"  
+                    f"{self.sweep_param_name2}_{self.sweep_vals2[idx2]:.4f}"
+                )
         
-        self.data[idx] = data
+        self.data[(idx1, idx2)] = data
         return data
 
+    def get_data(self, key, idx1 = None, idx2 = None):
+        if idx1 is None:
+            idx1 = self.sweep_idxs1
+        if idx2 is None:
+            idx2 = self.sweep_idxs2
+
+        # Either take only data from one idx or average over data from multiple idxs
+        # First convert each idx range into a list of integer indices
+        if isinstance(idx1, (int, float, np.integer)):
+            idx1 = [int(idx1)]
+        elif not isinstance(idx1, list):
+            raise ValueError(f"Invalid idx1: {idx1}")
+
+        if isinstance(idx2, (int, float, np.integer)):
+            idx2 = [int(idx2)]
+        elif not isinstance(idx2, list):
+            raise ValueError(f"Invalid idx1: {idx2}")
+
+        # Next, form a Cartesian product of all the indices
+        if idx1 is None and idx2 is None:
+            idxs = [(_idx1, _idx2) for _idx2 in self.sweep_idxs2 for _idx1 in self.sweep_idxs1]
+        elif idx1 is None:
+            idxs = [(_idx1, _idx2) for _idx2 in idx2 for _idx1 in self.sweep_idxs1]
+        elif idx2 is None:
+            idxs = [(_idx1, _idx2) for _idx2 in self.sweep_idxs2 for _idx1 in idx1]
+        else:
+            idxs = [(_idx1, _idx2) for _idx2 in idx2 for _idx1 in idx1]
+
+        return [self.read_data(_idx[0], _idx[1])[key] for _idx in idxs]
+
     @optional_figax
-    def landscape(self, *, state_idx, idx=None,
+    def landscape(self, *, state_idx, idx1=None, idx2=None,
                 style='jaya_xu',
                 omega_d_idx=-1, omega_d_lims = None,
                 fig=None, ax=None, num_x_ticks=None, xticklabels=None,
@@ -184,35 +343,15 @@ class FloquetPlot:
             cmap = "Reds"
         else:
             raise ValueError
-
-        # Either take only data from one idx or average over data from multiple idxs
-        if idx is None:
-            idx = list(range(self.num_sweep_idxs))
-
+    
         if style == 'jaya_xu':
-            if isinstance(idx, (float, np.integer)):
-                idx = int(idx)
-
-            if isinstance(idx, int):
-                data = self.get_data(idx)['displaced_state_overlaps'][:,:,state_idx].T ** 2
-            elif isinstance(idx, list):
-                data = sum([self.get_data(_idx)['displaced_state_overlaps'][:,:,state_idx] ** 2 
-                                for _idx in idx]).T / len(idx)
-            else:
-                raise ValueError(f"Invalid idx: {idx}")
-
+            all_data = self.get_data('displaced_state_overlaps', idx1, idx2)
+            data = sum([_data[:,:,state_idx] ** 2 for _data in all_data]).T / len(all_data)
             data = np.clip(1 - data, 0.0, 0.2)
 
         elif style == 'blais':
-            if isinstance(idx, (float, np.integer)):
-                idx = int(idx)
-
-            if isinstance(idx, int):
-                data = self.get_data(idx)['avg_excitation'][...,state_idx].T
-            elif isinstance(idx, list):
-                data = sum([self.get_data(_idx)['avg_excitation'][...,state_idx].T for _idx in idx]) / len(idx)
-            else:
-                raise ValueError(f"Invalid idx: {idx}")
+            all_data = self.get_data('avg_excitation', idx1, idx2)
+            data = sum(all_data)[:,:,state_idx].T / len(all_data)
             data = np.clip(data, 0, 3)
 
         else:
@@ -279,11 +418,12 @@ class FloquetPlot:
         return data,im
 
     @optional_figax
-    def blais_branch(self, *,idx, omega_d_idx, lookup_idxs=None, fig=None, ax=None):
+    def blais_branch(self, *,idx1, idx2, omega_d_idx, lookup_idxs=None, fig=None, ax=None):
         """
         Plot Blais-style branch analysis plot. 
         Inputs:
-            idx      : Index of the ng value to plot
+            idx1        : Index of the sweep1 axis value to plot
+            idx2        : Index of the sweep2 axis value to plot
             omega_d_idx : Drive frequency where we take a linecut
             lookup_idxs : List of indices to highlight
             fig, ax     : Figure and axis objects to plot on
@@ -295,15 +435,8 @@ class FloquetPlot:
             lookup_idxs = range(len(self.lookup))
 
         omega_d = self.omega_d[omega_d_idx]
-        if isinstance(idx, (float, np.integer)):
-            idx = int(idx)
-
-        if isinstance(idx, int):
-            avg_excitation = self.get_data(idx)['avg_excitation'][omega_d_idx, :, :]
-        elif isinstance(idx, list):
-            avg_excitation = sum([self.get_data(_idx)['avg_excitation'][omega_d_idx, :, :] for _idx in idx]) / len(idx)
-        else:
-            raise ValueError(f"Invalid idx: {idx}")
+        all_data = self.get_data('avg_excitation', idx1, idx2)
+        avg_excitation = sum(all_data)[omega_d_idx, :, :] / len(all_data)
         
         zorder = 999
         sty_cycler = iter(cycler(self.color_ls_alpha_cycler))
@@ -349,15 +482,8 @@ class FloquetPlot:
             lookup_idxs = range(len(self.lookup))
 
         omega_d = self.omega_d[omega_d_idx]
-        if isinstance(idx, (float, np.integer)):
-            idx = int(idx)
-
-        if isinstance(idx, int):
-            qenergies = self.get_data(idx)['quasienergies'][omega_d_idx, :, :]
-        elif isinstance(idx, list):
-            qenergies = sum([self.get_data(_idx)['quasienergies'][omega_d_idx, :, :] for _idx in idx]) / len(idx)
-        else:
-            raise ValueError(f"Invalid idx: {idx}")
+        all_data = self.get_data('quasienergies', idx1, idx2)
+        qenergies = sum(all_data)[omega_d_idx, :, :] / len(all_data)
     
         quasi_energy_max_min = omega_d/(4*np.pi)
         if qenergy_lims is None:
