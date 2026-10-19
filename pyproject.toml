@@ -23,6 +23,7 @@ dependencies = [
     "scipy>=1.17.1",
     "scqubits>=4.1.0",
     "tqdm>=4.67.3",
+    "papermill>=2.7.0",
 ]
 
 [tool.uv.sources]
