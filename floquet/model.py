@@ -139,11 +139,12 @@ class Model(eqx.Module):
         """
         return np.identity(self.hilbert_dim)
 
-    def mean_excitation(self, floquet_modes: np.ndarray) -> np.ndarray:
+    def mean_excitation(self, floquet_modes: jax.Array) -> jax.Array:
         """Mean excitation number of floquet modes, in the H0 eigenbasis.
 
         Each bare state is weighted by its excitation number. Can be overridden for
         models where another measure is more natural, e.g. for multi-mode systems.
+        Written in jax.numpy, since the branch analysis calls it under jit.
 
         Parameters:
             floquet_modes: Shape `(num_omega_ds, num_modes, hilbert_dim)`.
@@ -153,13 +154,13 @@ class Model(eqx.Module):
         """
         # The bare states are the basis states (bare_state_array is the identity), so the
         # overlaps are the components. Avoids an O(hilbert_dim^3) contraction.
-        overlaps_sq = np.abs(np.swapaxes(floquet_modes, -1, -2)) ** 2
+        overlaps_sq = jnp.abs(jnp.swapaxes(floquet_modes, -1, -2)) ** 2
 
         # The excitation number of a bare state is its index if H0 was given in its
         # eigenbasis, and otherwise its rank in energy
-        excitation = np.arange(self.hilbert_dim)
+        excitation = jnp.arange(self.hilbert_dim)
         if self.H0_evecs is not None:
-            excitation = np.argsort(np.argsort(np.asarray(self.H0_evals), axis=-1), axis=-1)
+            excitation = jnp.argsort(jnp.argsort(self.H0_evals, axis=-1), axis=-1)
 
         # sum over bare excitations weighted by excitation number
-        return np.real(np.einsum("...ik,...i->...k", overlaps_sq, excitation))
+        return jnp.real(jnp.einsum("...ik,...i->...k", overlaps_sq, excitation))

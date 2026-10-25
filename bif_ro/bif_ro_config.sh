@@ -4,13 +4,17 @@
 # The physics parameters (system, drive frequencies and photon numbers) are in params.py
 # ===========================
 
-# Drive frequencies solved per batch. Each batch holds
-# FREQS_PER_BATCH x num_photon_nums x hilbert_dim^2 complex Floquet modes on the host,
-# i.e. ~1.2 GB per frequency for hilbert_dim = 600 and 201 photon numbers.
-FREQS_PER_BATCH=4
+# FREQS_PER_BATCH and AMP_CHUNK can be overridden from the environment, e.g.
+#   sbatch --export=ALL,FREQS_PER_BATCH=10 bif_ro_batched.sh
+
+# Drive frequencies solved per batch. The batch's Floquet modes stay on the GPU:
+# FREQS_PER_BATCH x num_photon_nums x hilbert_dim^2 complex values, ~1.2 GB per
+# frequency for hilbert_dim = 600 and 201 photon numbers, and twice that at the peak
+# of the solve. The remaining frequencies are added to the last batch.
+FREQS_PER_BATCH=${FREQS_PER_BATCH:-4}
 
 # Drive amplitudes solved at once on the GPU (each call: FREQS_PER_BATCH x AMP_CHUNK points)
-AMP_CHUNK=8
+AMP_CHUNK=${AMP_CHUNK:-4}
 
 # Hyperparameters for floquet
 FIT_RANGE_FRACTION=1.0

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import time
 
+import jax.numpy as jnp
 import numpy as np
+from jax import Array, jit
+from jax.lax import scan
 
 from scipy.optimize import linear_sum_assignment
 
@@ -11,6 +14,40 @@ from .model import Model
 from .options import Options
 from .utils.file_io import Serializable
 from .compute_floquet import compute_floquet_grid
+
+
+@jit
+def _branch_steps(model: Model, floquet_modes: Array) -> tuple[Array, Array]:
+    """Match the Floquet modes at each amplitude to those at the previous amplitude.
+
+    The overlaps between the modes at consecutive amplitudes do not depend on how the
+    branches were ordered before, so all amplitude steps are independent. They run in
+    one pass on the device, so the full Floquet modes never leave it.
+
+    Parameters:
+        model: Model, for the bare states and the mean excitation.
+        floquet_modes: Shape `(num_omega_d, num_amps, hilbert_dim, hilbert_dim)`.
+
+    Returns:
+        assignment: assignment[w, a, j] is the mode at amplitude a with the largest
+            overlap with mode j at amplitude a - 1 (bare state j for a = 0). This is
+            the argmax, i.e. not necessarily one-to-one.
+            Shape `(num_omega_d, num_amps, hilbert_dim)`.
+        excitation: model.mean_excitation of the modes, in their unsorted order.
+            Shape `(num_omega_d, num_amps, ..., hilbert_dim)`.
+    """
+    bare_states = jnp.broadcast_to(
+        model.bare_state_array(), (floquet_modes.shape[0], *floquet_modes.shape[2:])
+    ).astype(floquet_modes.dtype)
+
+    def step(prev_modes, amp_idx):
+        modes = floquet_modes[:, amp_idx]
+        ovlps = jnp.abs(jnp.einsum("wih,wkh->wik", prev_modes.conj(), modes))
+        return modes, (jnp.argmax(ovlps, axis=-1), model.mean_excitation(modes))
+
+    # scan stacks the outputs along a leading amplitude axis
+    _, (assignment, excitation) = scan(step, bare_states, jnp.arange(floquet_modes.shape[1]))
+    return jnp.moveaxis(assignment, 0, 1), jnp.moveaxis(excitation, 0, 1)
 
 
 class FloquetAnalysis(Serializable):
@@ -90,11 +127,15 @@ class FloquetAnalysis(Serializable):
             column indices of shape (..., R).
         """
         idx = np.argmax(score, axis=-1)
-        s = np.sort(idx, axis=-1)
-        clash = np.any(s[..., 1:] == s[..., :-1], axis=-1)
-        for b in zip(*np.nonzero(clash)):
+        for b in zip(*np.nonzero(FloquetAnalysis._clashes(idx))):
             idx[b] = linear_sum_assignment(-score[b])[1]
         return idx
+
+    @staticmethod
+    def _clashes(idx: np.ndarray) -> np.ndarray:
+        """Whether the assignments idx (..., R) are not one-to-one. Shape (...)."""
+        s = np.sort(idx, axis=-1)
+        return np.any(s[..., 1:] == s[..., :-1], axis=-1)
 
 
     def identify_floquet_modes(
@@ -112,7 +153,8 @@ class FloquetAnalysis(Serializable):
         Parameters:
             floquet_modes: Shape: `(num_omega_ds, num_amps, hilbert_dim, hilbert_dim)`,
                 where the first index labels the mode and the second the basis vector
-                components.
+                components. Can stay on the device: only the overlaps and the picked
+                modes are transferred to the host.
             displaced_state: Instance of DisplacedState.
             previous_coefficients: Coefficients from the previous amplitude range that
                 will be used when calculating overlap of the floquet modes against
@@ -132,12 +174,14 @@ class FloquetAnalysis(Serializable):
             previous_coefficients,
             amp_idxs=[amp_idx_0, amp_idx_0 + 1],
         )[:, 0, ...]
-        overlaps = np.einsum("wsh,wath->wast", np.conj(displaced_states), floquet_modes)
+        overlaps = np.asarray(
+            jnp.einsum("wsh,wath->wast", jnp.conj(displaced_states), floquet_modes)
+        )
 
         # Enforce one-to-one assignment between tracked states and Floquet modes.
         f_idxs = self._linear_sum_assignment(np.abs(overlaps))
         bare_state_overlaps = np.take_along_axis(overlaps, f_idxs[..., None], axis=-1)[..., 0]
-        picked = np.take_along_axis(floquet_modes, f_idxs[..., None], axis=2)
+        picked = np.asarray(jnp.take_along_axis(floquet_modes, f_idxs[..., None], axis=2))
 
         # Fix phase uncertainty by ensuring that the bare state overlap is real and positive.
         # Return bare state overlaps and the corresponding floquet modes, with the phase adjusted.
@@ -159,28 +203,40 @@ class FloquetAnalysis(Serializable):
 
         Based on Blais arXiv:2402.06615, specifically mean excitation number is Eq. (12)
         but without the integral over floquet modes in one period.
+
+        The overlaps, their argmax and the mean excitations are computed on the device
+        for all amplitudes at once (see _branch_steps). Only where the argmax is not
+        one-to-one are the overlaps recomputed on the host, for scipy's assignment.
+        Following the branches through the amplitudes is then cheap bookkeeping.
         """
         num_omega_d, num_amps = floquet_modes.shape[:2]
-        avg_excitation = []
-        ordered_quasienergies = np.empty_like(quasienergies)
+        # (writable) host copies, which are small
+        assignment, excitation = (np.array(x) for x in _branch_steps(self.model, floquet_modes))
 
-        # since we're sorting all modes, begin with the bare states
-        prev_modes = np.broadcast_to(
-            self.model.bare_state_array(), (num_omega_d, self.hilbert_dim, self.hilbert_dim)
-        )
+        # Enforce one-to-one assignment where the argmax clashes
+        bare_states = self.model.bare_state_array()
+        for w, a in zip(*np.nonzero(self._clashes(assignment))):
+            prev_modes = bare_states if a == 0 else np.asarray(floquet_modes[w, a - 1])
+            ovlps = np.abs(np.einsum(
+                "ih,kh->ik", prev_modes.conj(), np.asarray(floquet_modes[w, a]), optimize=True
+            ))
+            assignment[w, a] = linear_sum_assignment(-ovlps)[1]
+
+        # Follow the branches: order[w, a, i] is the mode at amplitude a on branch i,
+        # where branch i starts from bare state i
+        order = np.empty_like(assignment)
+        branch = np.broadcast_to(np.arange(self.hilbert_dim), (num_omega_d, self.hilbert_dim))
         for amp_idx in range(num_amps):
-            modes = floquet_modes[:, amp_idx, :, :]
-            ovlps = np.abs(np.einsum("wih,wkh->wik", prev_modes.conj(), modes))
-            perm = self._linear_sum_assignment(ovlps)
-            prev_modes = np.take_along_axis(modes, perm[..., None], axis=1)
-            # mean excitation is model specific, e.g. per subsystem for multi-mode systems
-            avg_excitation.append(self.model.mean_excitation(prev_modes))
-            ordered_quasienergies[:, amp_idx] = np.take_along_axis(
-                quasienergies[:, amp_idx], perm, axis=1
-            )
+            branch = np.take_along_axis(assignment[:, amp_idx], branch, axis=-1)
+            order[:, amp_idx] = branch
 
-        # shape (num_omega_d, num_amps, ...), where ... is set by model.mean_excitation
-        return np.stack(avg_excitation, axis=1), ordered_quasienergies
+        ordered_quasienergies = np.take_along_axis(np.asarray(quasienergies), order, axis=-1)
+
+        # mean excitation is model specific, e.g. per subsystem for multi-mode systems.
+        # shape (num_omega_d, num_amps, ..., hilbert_dim), with ... set by model.mean_excitation
+        order = order.reshape(num_omega_d, num_amps, *[1] * (excitation.ndim - 3), -1)
+        avg_excitation = np.take_along_axis(excitation, order, axis=-1)
+        return avg_excitation, ordered_quasienergies
 
     def run(self, filepath: str | None = None) -> dict:
         """Perform floquet analysis over range of amplitudes and drive frequencies.
@@ -217,9 +273,9 @@ class FloquetAnalysis(Serializable):
         num_amps = len(self.model.drive_amplitudes)
         num_states = len(self.state_indices)
 
-        # Solve the Floquet problem for all the drive parameters
+        # Solve the Floquet problem for all the drive parameters. The Floquet modes stay
+        # on the device; only the quantities derived from them are transferred.
         f_modes, f_energies = compute_floquet_grid(self.model, options=self.options)
-        f_modes, f_energies = np.asarray(f_modes), np.asarray(f_energies)
         solve_time = time.time()
 
         # Blais branch analysis. Independent of the fit ranges, so done in one pass.
@@ -314,7 +370,7 @@ class FloquetAnalysis(Serializable):
             data_dict["floquet_modes"] = floquet_modes
         print(f"finished in {(time.time() - start_time) / 60} minutes")
         print(
-            f"\t solve (incl. transfer to host) {solve_time - start_time:.1f} s, "
+            f"\t solve {solve_time - start_time:.1f} s, "
             f"branch analysis {branch_time - solve_time:.1f} s, "
             f"displaced state analysis {time.time() - branch_time:.1f} s",
             flush=True,

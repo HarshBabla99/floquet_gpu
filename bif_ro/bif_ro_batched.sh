@@ -22,7 +22,7 @@ source bif_ro_config.sh
 # result to the shared filesystem only at the end.
 WORK_DIR=/tmp/floquet_${SLURM_JOB_ID}
 SAVE_DIR=$SAVE_ROOT
-OUTPUT_NAME=bif_ro.h5
+OUTPUT_NAME=bif_ro_${SLURM_JOB_ID}.h5
 mkdir -p "$WORK_DIR" "$SAVE_DIR"
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK

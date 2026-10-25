@@ -1,4 +1,6 @@
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
 import qutip as qt
 import scqubits as scq
@@ -83,12 +85,13 @@ class BifurcationROModel(Model):
         super().__init__(H0, H1, omega_d_values, drive_amplitudes)
         self.subsystem_dims = tuple(subsystem_dims)
 
-    def mean_excitation(self, floquet_modes: np.ndarray) -> np.ndarray:
+    def mean_excitation(self, floquet_modes: jax.Array) -> jax.Array:
         r"""Mean excitation number of each subsystem, and of the composite system.
 
         For a state $|\psi> = \sum_{ij} c_{ij} |i_t, j_r>$, the transmon's mean
         excitation is $\sum_i i * \sum_j |c_{ij}|^2$, which is just a tensor contraction,
         i.e. the excitation of the reduced density matrix without building it.
+        Written in jax.numpy, since the branch analysis calls it under jit.
 
         Parameters:
             floquet_modes: In the dressed basis. Shape: (num_omega_ds, num_modes, hilbert_dim).
@@ -99,22 +102,21 @@ class BifurcationROModel(Model):
                 Shape: (num_omega_ds, len(subsystem_dims) + 1, num_modes).
         """
         # Floquet modes as kets in the product basis: psi = evecs @ c
-        evecs = np.asarray(self.H0_evecs)
-        states = floquet_modes @ np.swapaxes(evecs, -1, -2)
+        states = floquet_modes @ jnp.swapaxes(self.H0_evecs, -1, -2)
 
         # Split the product-basis axis into one axis per subsystem
-        probs = np.abs(states.reshape(*states.shape[:-1], *self.subsystem_dims)) ** 2
+        probs = jnp.abs(states.reshape(*states.shape[:-1], *self.subsystem_dims)) ** 2
         subsys_axes = tuple(range(states.ndim - 1, probs.ndim))
-        probs /= probs.sum(axis=subsys_axes, keepdims=True)
+        probs = probs / probs.sum(axis=subsys_axes, keepdims=True)
 
         mean_excitation = []
         for subsys_axis, subsys_dim in zip(subsys_axes, self.subsystem_dims):
             # Marginalize over every subsystem except this one
             traced_out = tuple(axis for axis in subsys_axes if axis != subsys_axis)
-            mean_excitation.append(probs.sum(axis=traced_out) @ np.arange(subsys_dim))
+            mean_excitation.append(probs.sum(axis=traced_out) @ jnp.arange(subsys_dim))
 
         mean_excitation.append(super().mean_excitation(floquet_modes))
-        return np.stack(mean_excitation, axis=-2)
+        return jnp.stack(mean_excitation, axis=-2)
 
 
 class BifurcationROSystem:
