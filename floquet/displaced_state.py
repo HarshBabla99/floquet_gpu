@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import warnings
 
+import jax.numpy as jnp
 import numpy as np
 
 from .model import Model
@@ -10,6 +11,9 @@ from .options import Options
 
 class DisplacedState:
     """Class providing methods for computing displaced states.
+
+    The computations run on the device (jax.numpy). The inputs can be numpy arrays, jax
+    arrays or h5py Datasets; the overlaps and fit coefficients are returned as numpy arrays.
 
     Parameters:
         hilbert_dim: Hilbert space dimension
@@ -35,7 +39,7 @@ class DisplacedState:
 
         self.omega_d_scaled = (omega_ds - omega_d_mid) / omega_d_half_range
         self.amp_scaled = self.model.drive_amplitudes.T / amp_scale
-        self.poly_terms = self._create_poly_terms()
+        self.poly_terms = jnp.asarray(self._create_poly_terms())
 
     def overlap_with_bare_states(
         self,
@@ -77,14 +81,14 @@ class DisplacedState:
                 edge of the amplitude range, specified by amp_idx_0.
                 Shape: `(num_omega_d, num_amps, num_states)`.
         """
-        floquet_modes = floquet_modes[omega_d_idxs[0] : omega_d_idxs[1], ...]
+        floquet_modes = jnp.asarray(floquet_modes[omega_d_idxs[0] : omega_d_idxs[1], ...])
         displaced_states = self.displaced_state(
             coefficients, omega_d_idxs, [amp_idx_0, amp_idx_0 + 1]
         )[:, 0, ...]
 
-        return np.abs(
-            np.einsum("wsh,wash->was", np.conj(displaced_states), floquet_modes)
-        )
+        return np.asarray(jnp.abs(
+            jnp.einsum("wsh,wash->was", jnp.conj(displaced_states), floquet_modes)
+        ))
 
     def overlap_with_displaced_states(
         self,
@@ -114,13 +118,13 @@ class DisplacedState:
                 for each drive frequency and drive amplitude.
                 Shape: `(num_omega_ds, num_amps, num_states)`.
         """
-        floquet_modes = floquet_modes[
+        floquet_modes = jnp.asarray(floquet_modes[
             omega_d_idxs[0] : omega_d_idxs[1], amp_idxs[0] : amp_idxs[1], :, :
-        ]
+        ])
         displaced_states = self.displaced_state(coefficients, omega_d_idxs, amp_idxs)
-        return np.abs(
-            np.einsum("wash,wash->was", np.conj(displaced_states), floquet_modes)
-        )
+        return np.asarray(jnp.abs(
+            jnp.einsum("wash,wash->was", jnp.conj(displaced_states), floquet_modes)
+        ))
 
     def displaced_state(
         self,
@@ -168,20 +172,15 @@ class DisplacedState:
         ]
 
         # Compute the perturbation, based on the given coefficients.
-        result = np.einsum("wat,sht->wash", _poly_terms, coefficients)
+        result = jnp.einsum("wat,sht->wash", _poly_terms, jnp.asarray(coefficients))
 
         # Add the perturbation to the bare state. Bare states are defined by the model.
-        # Get only the states corresponding to state_indices, and tile them for all
+        # Get only the states corresponding to state_indices, broadcast over all
         # omega_ds and amps.
-        result += np.tile(
-            self.model.bare_state_array()[None, None, self.state_indices, :],
-            (*result.shape[:2], 1, 1),
-        )
+        result = result + self.model.bare_state_array()[self.state_indices, :]
 
         # Normalize
-        result /= np.linalg.norm(result, axis=-1, keepdims=True)
-
-        return result
+        return result / jnp.linalg.norm(result, axis=-1, keepdims=True)
 
     def _create_poly_terms(self) -> np.ndarray:
         r"""Compute a tensor of polynomial terms $\omega_d^{k_0} * \Omega_d^{k_1}$.
@@ -271,13 +270,13 @@ class DisplacedStateFit(DisplacedState):
                 ovlp_with_bare_states, floquet_modes, poly_terms, freq_chunk
             )
 
-        # read h5py Datasets into memory for the fit over all points
-        floquet_modes = np.asarray(floquet_modes)
+        # read h5py Datasets into (device) memory for the fit over all points
+        floquet_modes = jnp.asarray(floquet_modes)
 
         # Only fit states that we think haven't run into a transition,
         # and those within the specified bounds
         # mask.shape = (num_omega_ds, num_amps, num_state_indices).
-        mask = np.asarray(ovlp_with_bare_states) > self.options.overlap_cutoff
+        mask = jnp.asarray(ovlp_with_bare_states) > self.options.overlap_cutoff
 
         coeffs = np.zeros(
             (len(self.state_indices), self.hilbert_dim, self.exponent_pairs.shape[-1]),
@@ -314,36 +313,40 @@ class DisplacedStateFit(DisplacedState):
         constant. Stacking them on the next chunk's points and refactorizing therefore
         gives the same coefficients as fitting all points at once, while only one
         chunk is held in memory.
+
+        R starts as zeros and the points not fitted are zero rows (see _points_to_fit).
+        Zero rows do not change R or the solution, but keep every shape fixed, so the
+        device does not recompile for each chunk.
         """
         num_states = len(self.state_indices)
         num_fit_terms = self.exponent_pairs.shape[-1]
 
         # running QR factors, transformed states and point counts for each state
-        r_factors = [np.zeros((0, num_fit_terms)) for _ in range(num_states)]
-        q_states = [np.zeros((0, self.hilbert_dim), dtype=complex) for _ in range(num_states)]
-        num_points, num_outliers, num_masked = np.zeros((3, num_states), dtype=int)
+        r_factors = [jnp.zeros((num_fit_terms, num_fit_terms)) for _ in range(num_states)]
+        q_states = [
+            jnp.zeros((num_fit_terms, self.hilbert_dim), dtype=complex)
+            for _ in range(num_states)
+        ]
+        num_points, num_outliers = np.zeros((2, num_states), dtype=int)
 
         num_omega_ds = floquet_modes.shape[0]
         for start in range(0, num_omega_ds, freq_chunk):
             chunk = slice(start, min(start + freq_chunk, num_omega_ds))
-            mask = np.asarray(ovlp_with_bare_states[chunk]) > self.options.overlap_cutoff
-            modes = np.asarray(floquet_modes[chunk])
+            mask = jnp.asarray(ovlp_with_bare_states[chunk]) > self.options.overlap_cutoff
+            modes = jnp.asarray(floquet_modes[chunk])
             for arr_idx, state_idx in enumerate(self.state_indices):
-                chunk_poly_terms, chunk_states, too_big = self._points_to_fit(
+                chunk_poly_terms, chunk_states, fitted, too_big = self._points_to_fit(
                     target_states=modes[..., arr_idx, :],
                     mask=mask[..., arr_idx],
                     state_index=state_idx,
                     poly_terms=poly_terms[chunk],
                 )
-                num_points[arr_idx] += len(chunk_states)
+                num_points[arr_idx] += fitted.sum()
                 num_outliers[arr_idx] += too_big.sum()
-                num_masked[arr_idx] += too_big.size
-                if len(chunk_states) == 0:
-                    continue
-                q, r_factors[arr_idx] = np.linalg.qr(
-                    np.vstack([r_factors[arr_idx], chunk_poly_terms])
+                q, r_factors[arr_idx] = jnp.linalg.qr(
+                    jnp.vstack([r_factors[arr_idx], chunk_poly_terms])
                 )
-                q_states[arr_idx] = q.T @ np.vstack([q_states[arr_idx], chunk_states])
+                q_states[arr_idx] = q.T @ jnp.vstack([q_states[arr_idx], chunk_states])
 
         coeffs = np.zeros((num_states, self.hilbert_dim, num_fit_terms), dtype=complex)
         self.fit_ok = np.ones(num_states, dtype=bool)
@@ -354,7 +357,7 @@ class DisplacedStateFit(DisplacedState):
                 state_index=state_idx,
                 num_points=num_points[arr_idx],
                 num_outliers=num_outliers[arr_idx],
-                num_masked=num_masked[arr_idx],
+                num_masked=num_points[arr_idx] + num_outliers[arr_idx],
             )
         return coeffs
 
@@ -365,59 +368,60 @@ class DisplacedStateFit(DisplacedState):
         state_index: int,
         poly_terms: np.ndarray,
     ) -> tuple[np.ndarray, bool]:
-        masked_poly_terms, masked_states_to_fit, too_big = self._points_to_fit(
+        masked_poly_terms, masked_states_to_fit, fitted, too_big = self._points_to_fit(
             target_states, mask, state_index, poly_terms
         )
+        num_points, num_outliers = int(fitted.sum()), int(too_big.sum())
         return self._solve_fit(
             masked_poly_terms,
             masked_states_to_fit,
             state_index=state_index,
-            num_points=len(masked_states_to_fit),
-            num_outliers=too_big.sum(),
-            num_masked=too_big.size,
+            num_points=num_points,
+            num_outliers=num_outliers,
+            num_masked=num_points + num_outliers,
         )
 
     def _points_to_fit(
         self,
-        target_states: np.ndarray,
-        mask: np.ndarray,
+        target_states: jnp.ndarray,
+        mask: jnp.ndarray,
         state_index: int,
-        poly_terms: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        poly_terms: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Polynomial terms and deviations from the bare state of the points to fit.
 
+        Points that are not fitted (masked out, or outliers) are kept as zero rows rather
+        than removed. Zero rows do not change the least-squares solution, and keep the
+        shapes fixed, so the device does not recompile for every mask.
+
         Returns:
-            masked_poly_terms: Shape `(num_points, num_fit_terms)`.
-            masked_states_to_fit: Shape `(num_points, hilbert_dim)`.
-            too_big: Which masked points were discarded as outliers.
+            masked_poly_terms: Shape `(num_amp_freq_pairs, num_fit_terms)`.
+            masked_states_to_fit: Shape `(num_amp_freq_pairs, hilbert_dim)`.
+            fitted: Which amp-freq pairs are fitted.
+            too_big: Which masked amp-freq pairs were discarded as outliers.
         """
         num_fit_terms = self.exponent_pairs.shape[-1]
         mask_flat = mask.ravel()
 
-        # Flatten and mask arrays. Resulting rows index masked amp-freq pairs.
+        # Flatten arrays. Rows index amp-freq pairs.
         # For the poly_terms matrix, the cols index the fit terms.
         # For states, the cols index the hilbert_dim
-        masked_poly_terms = poly_terms.reshape(-1, num_fit_terms)[mask_flat]
-        masked_target_states = target_states.reshape(-1, self.hilbert_dim)[mask_flat]
-
-        # Bare states array (repeated for all amp-freq pairs)
-        # masked_bare_states = np.tile(
-        #     self.model.bare_state_array()[None, state_index, :],
-        #     (masked_target_states.shape[0], 1),
-        # )
+        poly_terms = poly_terms.reshape(-1, num_fit_terms)
+        target_states = target_states.reshape(-1, self.hilbert_dim)
 
         # Fit the difference between the target states and the bare states
-        # masked_states_to_fit = masked_target_states - masked_bare_states
-        masked_states_to_fit = masked_target_states.copy()
-        masked_states_to_fit[:, state_index] -= 1.0
+        states_to_fit = target_states.at[:, state_index].add(-1.0)
 
         # ignore any values that are too large
-        too_big = np.any(np.abs(masked_states_to_fit) > 1, axis=-1)
-        if too_big.any():
-            masked_poly_terms   = masked_poly_terms[~too_big]
-            masked_states_to_fit = masked_states_to_fit[~too_big]
+        too_big = mask_flat & jnp.any(jnp.abs(states_to_fit) > 1, axis=-1)
+        fitted = mask_flat & ~too_big
 
-        return masked_poly_terms, masked_states_to_fit, too_big
+        return (
+            poly_terms * fitted[:, None],
+            states_to_fit * fitted[:, None],
+            fitted,
+            too_big,
+        )
 
     def _solve_fit(
         self,
@@ -449,13 +453,11 @@ class DisplacedStateFit(DisplacedState):
             return np.zeros((self.hilbert_dim, num_fit_terms), dtype=complex), False
 
         # Simple linear fit: states_to_fit = poly_terms @ coefficients.T
-        try:
-            popt = np.linalg.lstsq(poly_terms, states_to_fit)[0].T
-            fit_ok = True
-
-        except np.linalg.LinAlgError:
+        # jnp.linalg.lstsq does not raise if it fails, but returns non-finite values
+        popt = np.asarray(jnp.linalg.lstsq(poly_terms, states_to_fit)[0].T)
+        fit_ok = bool(np.all(np.isfinite(popt)))
+        if not fit_ok:
             warnings.warn("Fit failed. Returning zeros for the fit", stacklevel=4)
             popt = np.zeros((self.hilbert_dim, num_fit_terms), dtype=complex)
-            fit_ok = False
 
         return popt, fit_ok

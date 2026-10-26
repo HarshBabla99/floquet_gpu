@@ -4,8 +4,10 @@ import jax.numpy as jnp
 import numpy as np
 import qutip as qt
 import scqubits as scq
+from floquet.floquet import FloquetAnalysis
 from floquet.model import Model
-from scipy.optimize import root
+from jax.lax.linalg import eigh as lax_eigh, EighImplementation
+from scipy.optimize import linear_sum_assignment, root
 
 ####################################################################################################
 # Transmon
@@ -67,14 +69,31 @@ def coupled_system(H0_t, n_t, eye_t, H0_r, H1_r, a_r, adag_r, eye_r, g):
 
     return H0, H1
 
+def eigh_with_retry(H: jax.Array) -> tuple[jax.Array, jax.Array]:
+    """Batched eigh on the device.
+
+    On GPU, the default eigensolver very rarely fails without warning and returns NaNs
+    (see floquet.compute_floquet_grid). The failed matrices are recomputed with Jacobi.
+    """
+    evals, evecs = jnp.linalg.eigh(H)
+    ok = jnp.all(jnp.isfinite(evecs), axis=(-2, -1)) & jnp.all(jnp.isfinite(evals), axis=-1)
+    for idx in np.argwhere(~np.asarray(ok)):
+        idx = tuple(idx)
+        # lax.linalg.eigh returns (evecs, evals)
+        v, e = lax_eigh(H[idx], implementation=EighImplementation.JACOBI)
+        evals, evecs = evals.at[idx].set(e), evecs.at[idx].set(v)
+    if not (jnp.all(jnp.isfinite(evals)) and jnp.all(jnp.isfinite(evecs))):
+        raise FloatingPointError("eigh still non-finite after the Jacobi retry")
+    return evals, evecs
+
 ####################################################################################################
 class BifurcationROModel(Model):
     """Floquet model of a transmon coupled to a Kerr-cat resonator, for a range of drive
     frequencies. Built by BifurcationROSystem.model().
 
     The operators are in the product state basis |i_t, j_r>, with basis index
-    i * resonator_dim + j. Model diagonalizes the frequency-dependent H0 and labels the
-    dressed states by these product states, so the state indices are product-state
+    i * resonator_dim + j. The frequency-dependent H0 is diagonalized and the dressed
+    states are labelled by these product states, so the state indices are product-state
     indices.
     """
 
@@ -82,8 +101,49 @@ class BifurcationROModel(Model):
     subsystem_dims: tuple = eqx.field(static=True)
 
     def __init__(self, H0, H1, omega_d_values, drive_amplitudes, subsystem_dims):
-        super().__init__(H0, H1, omega_d_values, drive_amplitudes)
+        """Same as Model.__init__, but diagonalizes H0 on the device.
+
+        Parameters:
+            H0: Static Hamiltonians in the product basis. Shape (num_omega_ds, n, n).
+            H1: Drive operator in the product basis. Shape (n, n).
+            omega_d_values: Drive frequencies. Shape (num_omega_ds,).
+            drive_amplitudes: Shape (num_amps, num_omega_ds).
+            subsystem_dims: (transmon_dim, resonator_dim).
+        """
+        self.omega_d_values = np.asarray(omega_d_values)
+        self.drive_amplitudes = np.asarray(drive_amplitudes)
+        assert self.drive_amplitudes.shape[1] == len(self.omega_d_values)
+
+        # The simulation is performed in the eigenbasis of the drift Hamiltonian
+        self.H0_evals, self.H0_evecs = self.diagonalize(jnp.asarray(H0))
+        self.H1_tilde = (
+            jnp.conj(jnp.swapaxes(self.H0_evecs, -1, -2)) @ jnp.asarray(H1) @ self.H0_evecs
+        )
+        self.hilbert_dim = H0.shape[-1]
         self.subsystem_dims = tuple(subsystem_dims)
+
+    @staticmethod
+    def diagonalize(H0: jax.Array) -> tuple[jax.Array, jax.Array]:
+        """Model.diagonalize on the device.
+
+        The eigenvectors are labelled by the basis state they overlap most, which is the
+        argmax unless two basis states pick the same eigenvector. Only then is scipy's
+        assignment used, on the host. The phase is fixed such that this overlap is real
+        and positive.
+        """
+        evals, evecs = eigh_with_retry(H0)
+
+        # perm[..., k] is the eigenvector assigned to basis state k
+        perm = np.array(jnp.argmax(jnp.abs(evecs), axis=-1))
+        for idx in zip(*np.nonzero(FloquetAnalysis._clashes(perm))):
+            perm[idx] = linear_sum_assignment(-np.abs(np.asarray(evecs[idx])))[1]
+        perm = jnp.asarray(perm)
+        evals = jnp.take_along_axis(evals, perm, axis=-1)
+        evecs = jnp.take_along_axis(evecs, perm[..., None, :], axis=-1)
+
+        overlaps = jnp.einsum("...kk->...k", evecs)
+        evecs = evecs * jnp.conj(overlaps / jnp.abs(overlaps))[..., None, :]
+        return evals, evecs
 
     def mean_excitation(self, floquet_modes: jax.Array) -> jax.Array:
         r"""Mean excitation number of each subsystem, and of the composite system.
@@ -199,6 +259,20 @@ class BifurcationROSystem:
             *kerr_cat(self.omega_r_optimized[0], self.kerr_optimized[0], self.params['resonator_dim']),
             self.g_optimized[0],
         )
+
+        # The static Hamiltonian is affine in (omega_r, K, g):
+        # H0 = A + omega_r * B + K * C + g * D, see static_hamiltonian().
+        # Store A, B, C, D on the device, so model() builds H0 for a batch of frequencies there.
+        dim_r = self.params['resonator_dim']
+        H0_t, n_t, eye_t = self.tmon_ops
+        no_tmon = (0 * H0_t, n_t, eye_t)
+        self.H0_terms = [
+            jnp.asarray(coupled_system(*ops, *kerr_cat(omega_r, kerr, dim_r), g)[0].full())
+            for ops, (omega_r, kerr, g) in zip(
+                (self.tmon_ops, no_tmon, no_tmon, no_tmon),
+                ((0., 0., 0.), (1., 0., 0.), (0., 1., 0.), (0., 0., 1.)),
+            )
+        ]
 
         # Diagonalize the undriven Hamiltonian for all resonator frequencies.
         # The eigenvectors are not stored (num_omega_r x hilbert_dim^2 is too large); the
@@ -325,9 +399,13 @@ class BifurcationROSystem:
         return H0
 
     def model(self, freq_slice: slice = slice(None)) -> BifurcationROModel:
-        """Floquet model for a range of the drive frequencies (one batch)."""
-        omega_r_idxs = range(len(self.omega_r_values))[freq_slice]
-        H0 = np.stack([self.static_hamiltonian(idx).full() for idx in omega_r_idxs])
+        """Floquet model for a range of the drive frequencies (one batch), built on the device."""
+        A, B, C, D = self.H0_terms
+        omega_r, kerr, g = (
+            jnp.asarray(x[freq_slice])[:, None, None]
+            for x in (self.omega_r_optimized, self.kerr_optimized, self.g_optimized)
+        )
+        H0 = A + omega_r * B + kerr * C + g * D
         return BifurcationROModel(
             H0,
             self.H1_drive.full(),
